@@ -17,7 +17,7 @@ from indextts.vqvae.xtts_dvae import DiscreteVAE
 from indextts.utils.front import TextNormalizer
 
 class IndexTTS:
-    def __init__(self, cfg_path='checkpoints/config.yaml', model_dir='checkpoints', is_fp16=True, device=None, eval_mode=False):
+    def __init__(self, cfg_path='checkpoints/config.yaml', model_dir='checkpoints', is_fp16=True, device=None):
         """
         Args:
             cfg_path (str): path to the config file.
@@ -43,17 +43,17 @@ class IndexTTS:
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.is_fp16 else None
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
-        if not eval_mode:
-            # Load the VQ-VAE model
-            self.dvae = DiscreteVAE(**self.cfg.vqvae)
-            self.dvae_path = os.path.join(self.model_dir, self.cfg.dvae_checkpoint)
-            load_checkpoint(self.dvae, self.dvae_path)
-            self.dvae = self.dvae.to(self.device)
-            if self.is_fp16:
-                self.dvae.eval().half()
-            else:
-                self.dvae.eval()
-            print(">> vqvae weights restored from:", self.dvae_path)
+        
+        # TODO: no useful?
+        # self.dvae = DiscreteVAE(**self.cfg.vqvae)
+        # self.dvae_path = os.path.join(self.model_dir, self.cfg.dvae_checkpoint)
+        # load_checkpoint(self.dvae, self.dvae_path)
+        # self.dvae = self.dvae.to(self.device)
+        # if self.is_fp16:
+        #     self.dvae.eval().half()
+        # else:
+        #     self.dvae.eval()
+        # print(">> vqvae weights restored from:", self.dvae_path)
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
@@ -150,7 +150,7 @@ class IndexTTS:
             sentence.strip() for sentence in sentences if sentence.strip() and sentence.strip() not in {"'", ".", ","}
         ]
 
-    def infer(self, audio_prompt, text, output_path, verbose=False):
+    def infer(self, audio_prompt, text, output_path, split_sentences=True, remove_long_silence=True, verbose=False):
         print(">> start inference...")
         if verbose:
             print(f"origin text:{text}")
@@ -169,7 +169,7 @@ class IndexTTS:
 
         auto_conditioning = cond_mel
 
-        sentences = self.split_sentences(normalized_text)
+        sentences = self.split_sentences(normalized_text) if split_sentences else [normalized_text]
         if verbose:
             print("sentences:", sentences)
 
@@ -228,14 +228,14 @@ class IndexTTS:
                     print(codes, type(codes))
                     print(f"codes shape: {codes.shape}, codes type: {codes.dtype}")
                     print(f"code len: {code_lens}")
-
-                # remove ultra-long silence if exits
-                # temporarily fix the long silence bug.
-                codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
-                if verbose:
-                    print(codes, type(codes))
-                    print(f"fix codes shape: {codes.shape}, codes type: {codes.dtype}")
-                    print(f"code len: {code_lens}")
+                if remove_long_silence:
+                    # remove ultra-long silence if exits
+                    # temporarily fix the long silence bug.
+                    codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
+                    if verbose:
+                        print(codes, type(codes))
+                        print(f"fix codes shape: {codes.shape}, codes type: {codes.dtype}")
+                        print(f"code len: {code_lens}")
 
                 # latent, text_lens_out, code_lens_out = \
                 with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):

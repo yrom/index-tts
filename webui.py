@@ -3,7 +3,11 @@ import shutil
 import sys
 import threading
 import time
+import warnings
 
+# Suppress warnings from tensorflow and other libraries
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
@@ -24,7 +28,7 @@ os.makedirs("prompts",exist_ok=True)
 def infer(voice, text,output_path=None):
     if not output_path:
         output_path = os.path.join("outputs", f"spk_{int(time.time())}.wav")
-    tts.infer(voice, text, output_path)
+    tts.infer(voice, text, output_path, verbose=True)
     return output_path
 
 def gen_single(prompt, text):
