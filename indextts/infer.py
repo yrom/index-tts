@@ -2,6 +2,7 @@ import os
 import re
 import time
 from subprocess import CalledProcessError
+from typing import Optional, Union
 
 import sentencepiece as spm
 import torch
@@ -188,16 +189,8 @@ class IndexTTS:
         elif self.device.startswith('mps') and torch.mps.is_available():
             torch.mps.empty_cache()
 
-    def infer(self, audio_prompt, text, output_path, verbose=False):
-        print(">> start inference...")
-        if verbose:
-            print(f"origin text:{text}")
-        start_time = time.perf_counter()
-        normalized_text = self.preprocess_text(text)
-        print(f"normalized text:{normalized_text}")
-
-        audio, sr = torchaudio.load(audio_prompt)
-        audio_lenth = audio.shape[-1] / sr
+    def load_audio(self, audio_path, verbose=False):
+        audio, sr = torchaudio.load(audio_path)
         audio = torch.mean(audio, dim=0, keepdim=True).to(self.device)
         if audio.shape[0] > 1:
             audio = audio[0].unsqueeze(0)
@@ -206,12 +199,53 @@ class IndexTTS:
             print(f">> Audio resample from {sr} to 24000")
         mel_spec = MelSpectrogramFeatures().to(self.device)
         cond_mel = mel_spec(audio).to(self.device)
-        cond_mel_num_frames = cond_mel.shape[-1]
         if verbose:
             print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
         del audio
+        return cond_mel
+
+    def get_stats(self) -> Optional[dict]:
+        return self.stats if hasattr(self, "stats") else None
+
+    def infer(self, audio_prompt: Union[str, os.PathLike], text, output_path, verbose=False):
+        print(">> start inference...")
+        self.stats = {
+            "gpt_gen_time": 0,
+            "gpt_forward_time": 0,
+            "bigvgan_time": 0,
+        }
+        if verbose:
+            print(f"origin text:{text}")
+        normalized_text = self.preprocess_text(text)
+        print(f"normalized text:{normalized_text}")
+        # load audio
+        cond_mel = self.load_audio(audio_prompt, verbose=verbose)
+        cond_mel_num_frames = cond_mel.shape[-1]
+        if verbose:
+            print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
+        start_time = time.perf_counter()
+        wav_data, sampling_rate = self.infer_e2e(cond_mel, normalized_text, verbose=verbose)
+        wav_length = wav_data.shape[-1] / sampling_rate
+        end_time = time.perf_counter()
+        print(
+            f">> Reference audio length: {cond_mel_num_frames * 256 / sampling_rate:.2f} seconds",
+            f"mel frames: {cond_mel_num_frames}",
+        )
+        stats = self.get_stats()
+        for key, value in stats.items():
+            print(f">> {key}: {value:.2f}")
+        print(f">> Total inference time: {end_time - start_time:.2f} seconds")
+        print(f">> Generated audio length: {wav_length:.2f} seconds")
+        print(f">> RTF: {(end_time - start_time) / wav_length:.4f}")
+        torchaudio.save(output_path, wav_data, sampling_rate)
+        print(">> wav file saved to:", output_path)
+
         
-        auto_conditioning = cond_mel
+    def infer_e2e(self, audio_mel: torch.Tensor, normalized_text, verbose=False) -> tuple[torch.Tensor, int]: 
+        stats = self.get_stats()
+        cond_mel_num_frames = audio_mel.shape[-1]
+        assert cond_mel_num_frames > 0, "The input audio cannot be empty."
+        auto_conditioning = audio_mel
 
         sentences = self.split_sentences(normalized_text)
         if verbose:
@@ -229,9 +263,9 @@ class IndexTTS:
         # lang = "EN"
         # lang = "ZH"
         wavs = []
-        gpt_gen_time = 0
-        gpt_forward_time = 0
-        bigvgan_time = 0
+        gpt_gen_time = stats.get("gpt_gen_time", 0)
+        gpt_forward_time = stats.get("gpt_forward_time", 0)
+        bigvgan_time = stats.get("bigvgan_time", 0)
 
         for sent in sentences:
             self.empty_cache()
@@ -254,11 +288,13 @@ class IndexTTS:
 
             # text_len = torch.IntTensor([text_tokens.size(1)], device=text_tokens.device)
             # print(text_len)
-
+            from torch.profiler import profile, record_function
             m_start_time = time.perf_counter()
             with torch.no_grad():
-                with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
-                    codes = self.gpt.inference_speech(auto_conditioning, text_tokens,
+                with record_function("gpt_inference"):
+                    with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
+                        codes = \
+                            self.gpt.inference_speech(auto_conditioning, text_tokens,
                                                         cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]],
                                                                                       device=text_tokens.device),
                                                         # text_lengths=text_len,
@@ -279,50 +315,45 @@ class IndexTTS:
                     print(f"codes shape: {codes.shape}, codes type: {codes.dtype}")
                     print(f"code len: {code_lens}")
 
+                with record_function("remove_long_silence"):
                 # remove ultra-long silence if exits
                 # temporarily fix the long silence bug.
-                codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
+                    codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
                 if verbose:
                     print(codes, type(codes))
                     print(f"fix codes shape: {codes.shape}, codes type: {codes.dtype}")
                     print(f"code len: {code_lens}")
 
                 m_start_time = time.perf_counter()
-                # latent, text_lens_out, code_lens_out = \
+                
                 with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
-                    latent = \
-                        self.gpt(auto_conditioning, text_tokens,
+                    with record_function("gpt_forward"):
+                        latent = \
+                            self.gpt(auto_conditioning, text_tokens,
                                     torch.tensor([text_tokens.shape[-1]], device=text_tokens.device), codes,
                                     code_lens*self.gpt.mel_length_compression,
                                     cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]], device=text_tokens.device),
                                     return_latent=True, clip_inputs=False)
                     gpt_forward_time += time.perf_counter() - m_start_time
-
                     m_start_time = time.perf_counter()
-                    wav, _ = self.bigvgan(latent, auto_conditioning.transpose(1, 2))
+                    with record_function("bigvgan_infer"):
+                        wav, _ = self.bigvgan(latent, auto_conditioning.transpose(1, 2))
                     bigvgan_time += time.perf_counter() - m_start_time
                     wav = wav.squeeze(1)
-
                 wav = torch.clamp(32767 * wav, -32767.0, 32767.0)
                 if verbose:
                     print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
                 # wavs.append(wav[:, :-512])
                 wavs.append(wav)
                 del text_tokens, codes, latent
-        end_time = time.perf_counter()
 
         wav = torch.cat(wavs, dim=1)
-        wav_length = wav.shape[-1] / sampling_rate
-        print(f">> Reference audio length: {audio_lenth:.2f} seconds (mel frames: {cond_mel_num_frames})")
-        print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
-        print(f">> gpt_forward_time: {gpt_forward_time:.2f} seconds")
-        print(f">> bigvgan_time: {bigvgan_time:.2f} seconds")
-        print(f">> Total inference time: {end_time - start_time:.2f} seconds")
-        print(f">> Generated audio length: {wav_length:.2f} seconds")
-        print(f">> RTF: {(end_time - start_time) / wav_length:.4f}")
-
-        torchaudio.save(output_path, wav.cpu().type(torch.int16), sampling_rate)
-        print(">> wav file saved to:", output_path)
+        
+        if stats:
+            stats["gpt_gen_time"] = gpt_gen_time
+            stats["gpt_forward_time"] = gpt_forward_time
+            stats["bigvgan_time"] = bigvgan_time
+        return (wav.type(torch.int16).cpu(), sampling_rate)
 
 
 if __name__ == "__main__":
