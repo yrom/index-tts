@@ -122,6 +122,7 @@ class IndexTTS:
         # return text.translate(punctuation_map)
         return self.normalizer.infer(text)
 
+
     def remove_long_silence(self, codes: torch.Tensor, silent_token=52, max_consecutive=30):
         code_lens = []
         codes_list = []
@@ -178,6 +179,15 @@ class IndexTTS:
             sentence.strip() for sentence in sentences if sentence.strip() and sentence.strip() not in {"'", ".", ","}
         ]
 
+    def empty_cache(self):
+        """
+        Clear the GPU cache.
+        """
+        if self.device.startswith('cuda') and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif self.device.startswith('mps') and torch.mps.is_available():
+            torch.mps.empty_cache()
+
     def infer(self, audio_prompt, text, output_path, verbose=False):
         print(">> start inference...")
         if verbose:
@@ -187,15 +197,20 @@ class IndexTTS:
         print(f"normalized text:{normalized_text}")
 
         audio, sr = torchaudio.load(audio_prompt)
-        audio = torch.mean(audio, dim=0, keepdim=True)
+        audio_lenth = audio.shape[-1] / sr
+        audio = torch.mean(audio, dim=0, keepdim=True).to(self.device)
         if audio.shape[0] > 1:
             audio = audio[0].unsqueeze(0)
-        audio = torchaudio.transforms.Resample(sr, 24000)(audio)
-        cond_mel = MelSpectrogramFeatures()(audio).to(self.device)
-        cond_mel_frame = cond_mel.shape[-1]
+        if sr != 24000:
+            audio = torchaudio.transforms.Resample(sr, 24000).to(self.device)(audio)
+            print(f">> Audio resample from {sr} to 24000")
+        mel_spec = MelSpectrogramFeatures().to(self.device)
+        cond_mel = mel_spec(audio).to(self.device)
+        cond_mel_num_frames = cond_mel.shape[-1]
         if verbose:
             print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
-
+        del audio
+        
         auto_conditioning = cond_mel
 
         sentences = self.split_sentences(normalized_text)
@@ -219,6 +234,7 @@ class IndexTTS:
         bigvgan_time = 0
 
         for sent in sentences:
+            self.empty_cache()
             # sent = " ".join([char for char in sent.upper()]) if lang == "ZH" else sent.upper()
             cleand_text = tokenize_by_CJK_char(sent)
             # cleand_text = "他 那 像 HONG3 小 孩 似 的 话 , 引 得 人 们 HONG1 堂 大 笑 , 大 家 听 了 一 HONG3 而 散 ."
@@ -288,14 +304,16 @@ class IndexTTS:
                     wav = wav.squeeze(1)
 
                 wav = torch.clamp(32767 * wav, -32767.0, 32767.0)
-                print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
+                if verbose:
+                    print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
                 # wavs.append(wav[:, :-512])
                 wavs.append(wav)
+                del text_tokens, codes, latent
         end_time = time.perf_counter()
 
         wav = torch.cat(wavs, dim=1)
         wav_length = wav.shape[-1] / sampling_rate
-        print(f">> Reference audio length: {cond_mel_frame*256 / sampling_rate:.2f} seconds")
+        print(f">> Reference audio length: {audio_lenth:.2f} seconds (mel frames: {cond_mel_num_frames})")
         print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
         print(f">> gpt_forward_time: {gpt_forward_time:.2f} seconds")
         print(f">> bigvgan_time: {bigvgan_time:.2f} seconds")
