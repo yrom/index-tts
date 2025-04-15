@@ -3,7 +3,11 @@ import shutil
 import sys
 import threading
 import time
+import warnings
 
+# Suppress warnings from tensorflow and other libraries
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
