@@ -187,12 +187,15 @@ class IndexTTS:
         print(f"normalized text:{normalized_text}")
 
         audio, sr = torchaudio.load(audio_prompt)
+        audio_lenth = audio.shape[-1] / sr
         audio = torch.mean(audio, dim=0, keepdim=True)
         if audio.shape[0] > 1:
             audio = audio[0].unsqueeze(0)
-        audio = torchaudio.transforms.Resample(sr, 24000)(audio)
+        if sr != 24000:
+            audio = torchaudio.transforms.Resample(sr, 24000)(audio)
+            print(f">> Audio resample from {sr} to 24000")
         cond_mel = MelSpectrogramFeatures()(audio).to(self.device)
-        cond_mel_frame = cond_mel.shape[-1]
+        cond_mel_num_frames = cond_mel.shape[-1]
         if verbose:
             print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
 
@@ -278,16 +281,17 @@ class IndexTTS:
                     wav = wav.squeeze(1)
 
                 wav = torch.clamp(32767 * wav, -32767.0, 32767.0)
-                print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
+                if verbose:
+                    print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
                 # wavs.append(wav[:, :-512])
                 wavs.append(wav)
         end_time = time.perf_counter()
 
         wav = torch.cat(wavs, dim=1)
         wav_length = wav.shape[-1] / sampling_rate
-        print(f">> Reference audio length: {cond_mel_frame / sampling_rate:.2f} seconds")
-        print(f">> Total inference time: {end_time - start_time:.2f} seconds")
-        print(f">> Generated audio length: {wav_length:.2f} seconds")
+        print(f">> Reference audio length: {audio_lenth:.2f}s, mel frames: {cond_mel_num_frames}")
+        print(f">> Total inference time: {end_time - start_time:.2f}s")
+        print(f">> Generated audio length: {wav_length:.2f}s")
         print(f">> RTF: {(end_time - start_time) / wav_length:.4f}")
 
         torchaudio.save(output_path, wav.cpu().type(torch.int16), sampling_rate)
