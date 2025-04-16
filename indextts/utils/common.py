@@ -92,3 +92,16 @@ def safe_log(x: torch.Tensor, clip_val: float = 1e-7) -> torch.Tensor:
         Tensor: Element-wise logarithm of the input tensor with clipping applied.
     """
     return torch.log(torch.clip(x, min=clip_val))
+
+def detect_deepspeed():
+    try:
+        import platform
+
+        if platform.system() != "Darwin":
+            import deepspeed
+
+            return torch.cuda.is_available()
+    except Exception as e:
+        print(f">> DeepSpeed加载失败，回退到标准推理: {e}")
+
+    return False

@@ -14,7 +14,7 @@ from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
-from indextts.utils.common import tokenize_by_CJK_char
+from indextts.utils.common import tokenize_by_CJK_char, detect_deepspeed
 
 from indextts.utils.front import TextNormalizer
 
@@ -47,8 +47,10 @@ class IndexTTS:
             self.is_fp16 = False
             self.use_cuda_kernel = False
             print(">> Be patient, it may take a while to run in CPU mode.")
-
+        self.stats = {}
+        start_time = time.perf_counter()
         self.cfg = OmegaConf.load(cfg_path)
+        self.stats["cfg_load_time"] = time.perf_counter() - start_time
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.is_fp16 else None
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
@@ -66,27 +68,20 @@ class IndexTTS:
         # else:
         #     self.dvae.eval()
         # print(">> vqvae weights restored from:", self.dvae_path)
+        start_time = time.perf_counter()
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
+       
         self.gpt = self.gpt.to(self.device)
         if self.is_fp16:
             self.gpt.eval().half()
         else:
             self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
-        if self.is_fp16:
-            try:
-                import deepspeed
-                use_deepspeed = True
-            except (ImportError, OSError,CalledProcessError) as e:
-                use_deepspeed = False
-                print(f">> DeepSpeed加载失败，回退到标准推理: {e}")
 
-            self.gpt.post_init_gpt2_config(use_deepspeed=use_deepspeed, kv_cache=True, half=True)
-        else:
-            self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=False, half=False)
-        
+        self.gpt.post_init_gpt2_config(use_deepspeed=detect_deepspeed(), kv_cache=True, half=self.is_fp16)
+        self.stats["gpt_load_time"] = time.perf_counter() - start_time
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
             try:
@@ -96,6 +91,7 @@ class IndexTTS:
             except:
                 print(">> Failed to load custom CUDA kernel for BigVGAN. Falling back to torch.")
                 self.use_cuda_kernel = False
+        start_time = time.perf_counter()
         self.bigvgan = Generator(self.cfg.bigvgan, use_cuda_kernel=self.use_cuda_kernel)
         self.bigvgan_path = os.path.join(self.model_dir, self.cfg.bigvgan_checkpoint)
         vocoder_dict = torch.load(self.bigvgan_path, map_location="cpu")
@@ -105,12 +101,21 @@ class IndexTTS:
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
         print(">> bigvgan weights restored from:", self.bigvgan_path)
+        self.stats["bigvgan_load_time"] = time.perf_counter() - start_time
+        start_time = time.perf_counter()
         self.bpe_path = os.path.join(self.model_dir, self.cfg.dataset['bpe_model'])
         self.tokenizer = spm.SentencePieceProcessor(model_file=self.bpe_path)
         print(">> bpe model loaded from:", self.bpe_path)
+        self.stats["bpe_load_time"] = time.perf_counter() - start_time
+        start_time = time.perf_counter()
         self.normalizer = TextNormalizer()
         self.normalizer.load()
         print(">> TextNormalizer loaded")
+        self.stats["textnorm_load_time"] = time.perf_counter() - start_time
+
+        for key, value in self.stats.items():
+            print(f">> {key}: {value:.2f} seconds")
+        self.stats.clear()
 
     def preprocess_text(self, text):
         # chinese_punctuation = "，。！？；：“”‘’（）【】《》"
@@ -191,13 +196,11 @@ class IndexTTS:
 
     def load_audio(self, audio_path, verbose=False):
         audio, sr = torchaudio.load(audio_path)
-        audio = torch.mean(audio, dim=0, keepdim=True).to(self.device)
-        if audio.shape[0] > 1:
-            audio = audio[0].unsqueeze(0)
+        audio = torch.mean(audio, dim=0, keepdim=True)
         if sr != 24000:
-            audio = torchaudio.transforms.Resample(sr, 24000).to(self.device)(audio)
+            audio = torchaudio.transforms.Resample(sr, 24000)(audio)
             print(f">> Audio resample from {sr} to 24000")
-        mel_spec = MelSpectrogramFeatures().to(self.device)
+        mel_spec = MelSpectrogramFeatures()
         cond_mel = mel_spec(audio).to(self.device)
         if verbose:
             print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
@@ -205,7 +208,7 @@ class IndexTTS:
         return cond_mel
 
     def get_stats(self) -> Optional[dict]:
-        return self.stats if hasattr(self, "stats") else None
+        return self.stats
 
     def infer(self, audio_prompt: Union[str, os.PathLike], text, output_path, verbose=False):
         print(">> start inference...")
@@ -349,10 +352,10 @@ class IndexTTS:
 
         wav = torch.cat(wavs, dim=1)
         
-        if stats:
-            stats["gpt_gen_time"] = gpt_gen_time
-            stats["gpt_forward_time"] = gpt_forward_time
-            stats["bigvgan_time"] = bigvgan_time
+        
+        stats["gpt_gen_time"] = gpt_gen_time
+        stats["gpt_forward_time"] = gpt_forward_time
+        stats["bigvgan_time"] = bigvgan_time
         return (wav.type(torch.int16).cpu(), sampling_rate)
 
 

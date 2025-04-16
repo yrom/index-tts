@@ -1,8 +1,9 @@
 
 import platform
+from pathlib import Path
 from setuptools import find_packages, setup
 
-
+root_dir = Path(__file__).parent
 
 setup(
     name="indextts",
@@ -13,7 +14,7 @@ setup(
     long_description_content_type="text/markdown",
     description="An Industrial-Level Controllable and Efficient Zero-Shot Text-To-Speech System",
     url="https://github.com/index-tts/index-tts",
-    packages=find_packages(),
+    packages=find_packages(root_dir),
     include_package_data=True,
     install_requires=[
         "torch>=2.1.2",

@@ -341,7 +341,7 @@ class UnifiedVoice(nn.Module):
         self.cond_num = condition_num_latent
         self.cond_mask_pad = nn.ConstantPad1d((self.cond_num, 0), True)
         if condition_type == "perceiver":
-            self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads)
+            self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads, do_checkpointing=checkpointing)
             self.perceiver_encoder = PerceiverResampler(model_dim, dim_context=model_dim, num_latents=self.cond_num)
         elif condition_type == "conformer_perceiver" or condition_type == "conformer_encoder":
             self.conditioning_encoder = ConformerEncoder(input_size=100,
@@ -356,7 +356,7 @@ class UnifiedVoice(nn.Module):
                                                             heads=condition_module['attention_heads'],
                                                             num_latents=self.cond_num)
         else:
-            self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads, mean=True)
+            self.conditioning_encoder = ConditioningEncoder(100, model_dim, num_attn_heads=heads, mean=True, do_checkpointing=checkpointing)
 
         self.text_embedding = nn.Embedding(self.number_text_tokens * types + 1, model_dim)
         if use_mel_codes_as_input:
@@ -407,10 +407,11 @@ class UnifiedVoice(nn.Module):
         )
         if use_deepspeed and half and torch.cuda.is_available():
             import deepspeed
+            # NOTE: deepspeed use torch.half torch.float16
             self.ds_engine = deepspeed.init_inference(model=self.inference_model,
                                                       mp_size=1,
                                                       replace_with_kernel_inject=False,
-                                                      dtype=torch.float16)
+                                                      dtype=torch.half)
             self.inference_model = self.ds_engine.module.eval()
         elif use_deepspeed and torch.cuda.is_available():
             import deepspeed
