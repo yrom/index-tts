@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 import time
@@ -14,7 +15,7 @@ from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
-from indextts.utils.common import tokenize_by_CJK_char, detect_deepspeed
+from indextts.utils.common import profile_module, tokenize_by_CJK_char, detect_deepspeed
 
 from indextts.utils.front import TextNormalizer
 
@@ -72,15 +73,15 @@ class IndexTTS:
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
-       
+        
         self.gpt = self.gpt.to(self.device)
         if self.is_fp16:
             self.gpt.eval().half()
         else:
             self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
-
         self.gpt.post_init_gpt2_config(use_deepspeed=detect_deepspeed(), kv_cache=True, half=self.is_fp16)
+        self.gpt = profile_module(self.gpt)
         self.stats["gpt_load_time"] = time.perf_counter() - start_time
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
@@ -96,10 +97,11 @@ class IndexTTS:
         self.bigvgan_path = os.path.join(self.model_dir, self.cfg.bigvgan_checkpoint)
         vocoder_dict = torch.load(self.bigvgan_path, map_location="cpu")
         self.bigvgan.load_state_dict(vocoder_dict["generator"])
+        self.bigvgan = profile_module(self.bigvgan)
         self.bigvgan = self.bigvgan.to(self.device)
         # remove weight norm on eval mode
         self.bigvgan.remove_weight_norm()
-        self.bigvgan.eval()
+        self.bigvgan = self.bigvgan.eval()
         print(">> bigvgan weights restored from:", self.bigvgan_path)
         self.stats["bigvgan_load_time"] = time.perf_counter() - start_time
         start_time = time.perf_counter()
@@ -128,7 +130,7 @@ class IndexTTS:
         # return text.translate(punctuation_map)
         return self.normalizer.infer(text)
 
-
+    @torch.profiler.record_function("remove_long_silence")
     def remove_long_silence(self, codes: torch.Tensor, silent_token=52, max_consecutive=30):
         code_lens = []
         codes_list = []
@@ -243,7 +245,6 @@ class IndexTTS:
         torchaudio.save(output_path, wav_data, sampling_rate)
         print(">> wav file saved to:", output_path)
 
-        
     def infer_e2e(self, audio_mel: torch.Tensor, normalized_text, verbose=False) -> tuple[torch.Tensor, int]: 
         stats = self.get_stats()
         cond_mel_num_frames = audio_mel.shape[-1]
@@ -273,43 +274,41 @@ class IndexTTS:
         for sent in sentences:
             self.empty_cache()
             # sent = " ".join([char for char in sent.upper()]) if lang == "ZH" else sent.upper()
-            cleand_text = tokenize_by_CJK_char(sent)
-            # cleand_text = "他 那 像 HONG3 小 孩 似 的 话 , 引 得 人 们 HONG1 堂 大 笑 , 大 家 听 了 一 HONG3 而 散 ."
-            if verbose:
-                print("cleand_text:", cleand_text)
-
-            text_tokens = torch.tensor(self.tokenizer.EncodeAsIds(cleand_text),dtype=torch.int32, device=self.device).unsqueeze(0)
-            # text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
-            # text_tokens = F.pad(text_tokens, (1, 0), value=0)
-            # text_tokens = F.pad(text_tokens, (0, 1), value=1)
-            if verbose:
-                print(text_tokens)
-                print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
-                # debug tokenizer
-                text_token_syms = self.tokenizer.IdToPiece(text_tokens[0].tolist())
-                print(text_token_syms)
+            with torch.profiler.record_function("encode_text"):
+                cleand_text = tokenize_by_CJK_char(sent)
+                # cleand_text = "他 那 像 HONG3 小 孩 似 的 话 , 引 得 人 们 HONG1 堂 大 笑 , 大 家 听 了 一 HONG3 而 散 ."
+                if verbose:
+                    print("cleand_text:", cleand_text)
+                text_tokens = torch.tensor(self.tokenizer.EncodeAsIds(cleand_text),dtype=torch.int32, device=self.device).unsqueeze(0)
+                # text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
+                # text_tokens = F.pad(text_tokens, (1, 0), value=0)
+                # text_tokens = F.pad(text_tokens, (0, 1), value=1)
+                if verbose:
+                    print(text_tokens)
+                    print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
+                    # debug tokenizer
+                    text_token_syms = self.tokenizer.IdToPiece(text_tokens[0].tolist())
+                    print(text_token_syms)
 
             # text_len = torch.IntTensor([text_tokens.size(1)], device=text_tokens.device)
             # print(text_len)
-            from torch.profiler import profile, record_function
             m_start_time = time.perf_counter()
             with torch.no_grad():
-                with record_function("gpt_inference"):
-                    with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
-                        codes = \
-                            self.gpt.inference_speech(auto_conditioning, text_tokens,
-                                                        cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]],
-                                                                                      device=text_tokens.device),
-                                                        # text_lengths=text_len,
-                                                        do_sample=True,
-                                                        top_p=top_p,
-                                                        top_k=top_k,
-                                                        temperature=temperature,
-                                                        num_return_sequences=autoregressive_batch_size,
-                                                        length_penalty=length_penalty,
-                                                        num_beams=num_beams,
-                                                        repetition_penalty=repetition_penalty,
-                                                        max_generate_length=max_mel_tokens)
+                with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
+                    codes = \
+                        self.gpt.inference_speech(auto_conditioning, text_tokens,
+                                                    cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]],
+                                                                                    device=text_tokens.device),
+                                                    # text_lengths=text_len,
+                                                    do_sample=True,
+                                                    top_p=top_p,
+                                                    top_k=top_k,
+                                                    temperature=temperature,
+                                                    num_return_sequences=autoregressive_batch_size,
+                                                    length_penalty=length_penalty,
+                                                    num_beams=num_beams,
+                                                    repetition_penalty=repetition_penalty,
+                                                    max_generate_length=max_mel_tokens)
                 gpt_gen_time += time.perf_counter() - m_start_time
                 #codes = codes[:, :-2]
                 code_lens = torch.tensor([codes.shape[-1]], device=codes.device, dtype=codes.dtype)
@@ -318,10 +317,9 @@ class IndexTTS:
                     print(f"codes shape: {codes.shape}, codes type: {codes.dtype}")
                     print(f"code len: {code_lens}")
 
-                with record_function("remove_long_silence"):
                 # remove ultra-long silence if exits
                 # temporarily fix the long silence bug.
-                    codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
+                codes, code_lens = self.remove_long_silence(codes, silent_token=52, max_consecutive=30)
                 if verbose:
                     print(codes, type(codes))
                     print(f"fix codes shape: {codes.shape}, codes type: {codes.dtype}")
@@ -330,28 +328,26 @@ class IndexTTS:
                 m_start_time = time.perf_counter()
                 
                 with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
-                    with record_function("gpt_forward"):
-                        latent = \
-                            self.gpt(auto_conditioning, text_tokens,
-                                    torch.tensor([text_tokens.shape[-1]], device=text_tokens.device), codes,
-                                    code_lens*self.gpt.mel_length_compression,
-                                    cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]], device=text_tokens.device),
-                                    return_latent=True, clip_inputs=False)
+                    latent = \
+                        self.gpt(auto_conditioning, text_tokens,
+                                torch.tensor([text_tokens.shape[-1]], device=text_tokens.device), codes,
+                                code_lens*self.gpt.mel_length_compression,
+                                cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]], device=text_tokens.device),
+                                return_latent=True, clip_inputs=False)
                     gpt_forward_time += time.perf_counter() - m_start_time
                     m_start_time = time.perf_counter()
-                    with record_function("bigvgan_infer"):
-                        wav, _ = self.bigvgan(latent, auto_conditioning.transpose(1, 2))
+                    wav, _ = self.bigvgan(latent.to(text_tokens.device), auto_conditioning.transpose(1, 2).to(text_tokens.device))
                     bigvgan_time += time.perf_counter() - m_start_time
                     wav = wav.squeeze(1)
                 wav = torch.clamp(32767 * wav, -32767.0, 32767.0)
                 if verbose:
                     print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
                 # wavs.append(wav[:, :-512])
-                wavs.append(wav)
-                del text_tokens, codes, latent
+                wavs.append(wav.cpu().detach())
+                del text_tokens, codes, latent, wav
+        with torch.profiler.record_function("concat_wavs"):
+            wav = torch.cat(wavs, dim=1)
 
-        wav = torch.cat(wavs, dim=1)
-        
         
         stats["gpt_gen_time"] = gpt_gen_time
         stats["gpt_forward_time"] = gpt_forward_time
