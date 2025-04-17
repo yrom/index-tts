@@ -8,3 +8,4 @@ checkpoints/*.vocab
 checkpoints/*.model
 checkpoints/.cache
 outputs/
+build/

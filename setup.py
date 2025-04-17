@@ -16,6 +16,7 @@ setup(
     url="https://github.com/index-tts/index-tts",
     packages=find_packages(root_dir),
     include_package_data=True,
+    package_data={"indextts": ["**/*.cu", "**/*.cpp", "**/*.h"]},
     install_requires=[
         "torch>=2.1.2",
         "torchaudio",
