@@ -15,7 +15,7 @@ from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
-from indextts.utils.common import profile_module, tokenize_by_CJK_char, detect_deepspeed
+from indextts.utils.common import tokenize_by_CJK_char, detect_deepspeed
 
 from indextts.utils.front import TextNormalizer
 
@@ -81,7 +81,6 @@ class IndexTTS:
             self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
         self.gpt.post_init_gpt2_config(use_deepspeed=detect_deepspeed(), kv_cache=True, half=self.is_fp16)
-        self.gpt = profile_module(self.gpt)
         self.stats["gpt_load_time"] = time.perf_counter() - start_time
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
@@ -97,7 +96,6 @@ class IndexTTS:
         self.bigvgan_path = os.path.join(self.model_dir, self.cfg.bigvgan_checkpoint)
         vocoder_dict = torch.load(self.bigvgan_path, map_location="cpu")
         self.bigvgan.load_state_dict(vocoder_dict["generator"])
-        self.bigvgan = profile_module(self.bigvgan)
         self.bigvgan = self.bigvgan.to(self.device)
         # remove weight norm on eval mode
         self.bigvgan.remove_weight_norm()
@@ -130,7 +128,6 @@ class IndexTTS:
         # return text.translate(punctuation_map)
         return self.normalizer.infer(text)
 
-    @torch.profiler.record_function("remove_long_silence")
     def remove_long_silence(self, codes: torch.Tensor, silent_token=52, max_consecutive=30):
         code_lens = []
         codes_list = []
@@ -274,21 +271,20 @@ class IndexTTS:
         for sent in sentences:
             self.empty_cache()
             # sent = " ".join([char for char in sent.upper()]) if lang == "ZH" else sent.upper()
-            with torch.profiler.record_function("encode_text"):
-                cleand_text = tokenize_by_CJK_char(sent)
-                # cleand_text = "他 那 像 HONG3 小 孩 似 的 话 , 引 得 人 们 HONG1 堂 大 笑 , 大 家 听 了 一 HONG3 而 散 ."
-                if verbose:
-                    print("cleand_text:", cleand_text)
-                text_tokens = torch.tensor(self.tokenizer.EncodeAsIds(cleand_text),dtype=torch.int32, device=self.device).unsqueeze(0)
-                # text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
-                # text_tokens = F.pad(text_tokens, (1, 0), value=0)
-                # text_tokens = F.pad(text_tokens, (0, 1), value=1)
-                if verbose:
-                    print(text_tokens)
-                    print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
-                    # debug tokenizer
-                    text_token_syms = self.tokenizer.IdToPiece(text_tokens[0].tolist())
-                    print(text_token_syms)
+            cleand_text = tokenize_by_CJK_char(sent)
+            # cleand_text = "他 那 像 HONG3 小 孩 似 的 话 , 引 得 人 们 HONG1 堂 大 笑 , 大 家 听 了 一 HONG3 而 散 ."
+            if verbose:
+                print("cleand_text:", cleand_text)
+            text_tokens = torch.tensor(self.tokenizer.EncodeAsIds(cleand_text),dtype=torch.int32, device=self.device).unsqueeze(0)
+            # text_tokens = F.pad(text_tokens, (0, 1))  # This may not be necessary.
+            # text_tokens = F.pad(text_tokens, (1, 0), value=0)
+            # text_tokens = F.pad(text_tokens, (0, 1), value=1)
+            if verbose:
+                print(text_tokens)
+                print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
+                # debug tokenizer
+                text_token_syms = self.tokenizer.IdToPiece(text_tokens[0].tolist())
+                print(text_token_syms)
 
             # text_len = torch.IntTensor([text_tokens.size(1)], device=text_tokens.device)
             # print(text_len)
@@ -345,8 +341,7 @@ class IndexTTS:
                 # wavs.append(wav[:, :-512])
                 wavs.append(wav.cpu().detach())
                 del text_tokens, codes, latent, wav
-        with torch.profiler.record_function("concat_wavs"):
-            wav = torch.cat(wavs, dim=1)
+        wav = torch.cat(wavs, dim=1)
 
         
         stats["gpt_gen_time"] = gpt_gen_time

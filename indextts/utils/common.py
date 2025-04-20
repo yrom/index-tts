@@ -1,11 +1,5 @@
-import inspect
-import os
-import random
 import re
 import torch
-import torch.nn as nn
-from torch.profiler import record_function
-from functools import wraps
 import torchaudio
 
 MATPLOTLIB_FLAG = False
@@ -96,76 +90,6 @@ def detect_deepspeed():
             return torch.cuda.is_available()
     except Exception as e:
         print(f">> DeepSpeed加载失败，回退到标准推理: {e}")
+        print("Install DeepSpeed: https://www.deepspeed.ai/getting-started/")
 
     return False
-
-
-import wrapt
-import inspect
-
-import inspect
-
-
-class CallableWrapper(wrapt.ObjectProxy):
-    def __init__(self, wrapped, wrapper):
-        super(CallableWrapper, self).__init__(wrapped)
-        self._self_wrapper = wrapper
-
-    def __call__(self, *args, **kwargs):
-        return self._self_wrapper(self.__wrapped__, args, kwargs)
-
-
-class BoundCallableWrapper(wrapt.ObjectProxy):
-    def __init__(self, wrapped, wrapper):
-        super(BoundCallableWrapper, self).__init__(wrapped)
-        self._self_wrapper = wrapper
-
-    def __get__(self, instance, owner):
-        return self
-
-    def __call__(self, *args, **kwargs):
-        
-        return self._self_wrapper(self.__wrapped__, args, kwargs)
-
-class ModuleWrapper(wrapt.ObjectProxy):
-
-    def __init__(self, wrapped: nn.Module):
-        super(ModuleWrapper, self).__init__(wrapped)
-        #print(f"Wrapping module: {wrapped.__class__.__name__}")
-        def __method_wrapper(wrapped, args, kwargs):
-            #print(f"Calling {wrapped.__name__}")
-            with record_function(f"{self.__wrapped__.__class__.__name__}.{wrapped.__name__}"):
-                return wrapped(*args, **kwargs)
-
-        child_modules = inspect.getmembers(wrapped, predicate=lambda m: isinstance(m, nn.Module))
-        for n, child in child_modules:
-            if (
-                child != wrapped
-                and isinstance(child, nn.Module)
-                # and not isinstance(child, ModuleWrapper)
-                and not isinstance(child, wrapt.ObjectProxy)
-                # and not isinstance(child, nn.ModuleList)
-                # and not child.__class__.__name__.startswith("ConvNd")
-            ):
-                # Wrap the child module with ModuleWrapper
-                wrapped_child = ModuleWrapper(child)
-                print (f"Wrapping child module: {wrapped_child.__class__.__name__}")
-                setattr(wrapped, n, wrapped_child)
-
-        wrapped_methods = inspect.getmembers(wrapped, predicate=inspect.ismethod)
-        for name, method in wrapped_methods:
-            if name.startswith("_") or name.startswith("named_") or name in ["forward", "to", "train", "eval", "type", "cuda", "cpu", "float", "double", "half"]:
-                continue
-            if isinstance(method, CallableWrapper):
-                # print(f"Skipping already wrapped method: {name} in {wrapped.__class__.__name__}")
-                continue
-            # Wrap the method with a CallableWrapper
-            wrapped_method = CallableWrapper(method, __method_wrapper)
-            setattr(wrapped, name, wrapped_method)
-    def __call__(self, *args, **kwargs):
-        #print(f"Calling {self.__wrapped__.__class__.__name__} with args: {args}, kwargs: {kwargs}")
-        with record_function(self.__wrapped__.__class__.__name__):
-            return self.__wrapped__(*args, **kwargs)
-
-def profile_module(module: nn.Module) -> nn.Module:
-    return ModuleWrapper(module)

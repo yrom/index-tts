@@ -4,6 +4,7 @@ import warnings
 # Suppress warnings from tensorflow and other libraries
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="IndexTTS Command Line")
@@ -44,15 +45,27 @@ def main():
         print("ERROR: PyTorch is not installed. Please install it first.")
         sys.exit(1)
 
-    if args.device is None:
+    def auto_select_torch_devic():
         if torch.cuda.is_available():
-            args.device = "cuda:0"
+            return "cuda:0"
         elif torch.mps.is_available():
-            args.device = "mps"
-        else:
-            args.device = "cpu"
-            args.fp16 = False # Disable FP16 on CPU
-            print("WARNING: Running on CPU may be slow.")
+            if torch.backends.mps.is_built():
+                return "mps"
+            warnings.warn(
+                "WARNING: MPS not available because the current PyTorch install was not built with MPS enabled.",
+                category=RuntimeWarning,
+            )
+        warnings.warn("WARNING: Running on CPU may be slow.", category=RuntimeWarning)
+        return "cpu"
+        
+    if args.device is None:
+        args.device = auto_select_torch_devic()
+    if args.fp16 and not torch.is_autocast_enabled(args.device.split(":")[0]):
+        warnings.warn(
+            f"WARNING: AMP is disabled on the current device({args.device}). Falling back to FP32.",
+            category=RuntimeWarning,
+        )
+        args.fp16 = False
 
     from indextts.infer import IndexTTS
     tts = IndexTTS(cfg_path=args.config, model_dir=args.model_dir, is_fp16=args.fp16, device=args.device)
