@@ -3,8 +3,9 @@ import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList
+from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, GenerationMixin, GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
+from transformers.pytorch_utils import isin_mps_friendly
 from transformers.utils.model_parallel_utils import (assert_device_map,
                                                      get_device_map)
 
@@ -37,7 +38,7 @@ class ResBlock(nn.Module):
         return F.relu(self.net(x) + x)
 
 
-class GPT2InferenceModel(GPT2PreTrainedModel):
+class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):
     def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear, kv_cache=False):
         super().__init__(config)
         self.transformer = gpt
@@ -51,6 +52,7 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
         self.model_parallel = False
         self.device_map = None
         self.cached_mel_emb = None
+        self._attn_implementation = config._attn_implementation
 
     def parallelize(self, device_map=None):
         self.device_map = (
@@ -111,6 +113,35 @@ class GPT2InferenceModel(GPT2PreTrainedModel):
             "token_type_ids": token_type_ids,
         }
 
+    def prepare_attention_mask_for_generation(
+        self,
+        inputs: torch.Tensor,
+        pad_token_id: int,
+        eos_token_id: int,
+    ) -> torch.LongTensor:
+        pad_token_tensor = torch.tensor(pad_token_id, dtype=torch.long, device=inputs.device)
+        eos_token_tensor = torch.tensor(eos_token_id, dtype=torch.long, device=inputs.device)
+
+
+        # No information for attention mask inference -> return default attention mask
+        default_attention_mask = torch.ones(inputs.shape[:2], dtype=torch.long, device=inputs.device)
+
+        is_input_ids = len(inputs.shape) == 2 and inputs.dtype in [torch.int, torch.long]
+        if not is_input_ids:
+            return default_attention_mask
+
+        is_pad_token_in_inputs = isin_mps_friendly(elements=inputs, test_elements=pad_token_tensor).any()
+        
+        is_pad_token_not_equal_to_eos_token_id = (eos_token_tensor is None) or ~(
+            isin_mps_friendly(elements=eos_token_tensor, test_elements=pad_token_tensor).any()
+        )
+        can_infer_attention_mask = is_pad_token_in_inputs * is_pad_token_not_equal_to_eos_token_id
+        attention_mask_from_padding = inputs.ne(pad_token_tensor).long()
+
+        attention_mask = (
+            attention_mask_from_padding * can_infer_attention_mask + default_attention_mask * ~can_infer_attention_mask
+        )
+        return attention_mask
     def forward(
             self,
             input_ids=None,
@@ -388,7 +419,7 @@ class UnifiedVoice(nn.Module):
     def post_init_gpt2_config(self, use_deepspeed=False, kv_cache=False, half=False):
         seq_length = self.max_mel_tokens + self.max_text_tokens + 2
         gpt_config = GPT2Config(
-            vocab_size=self.max_mel_tokens,
+            vocab_size=self.number_mel_codes,
             n_positions=seq_length,
             n_ctx=seq_length,
             n_embd=self.model_dim,
@@ -408,10 +439,11 @@ class UnifiedVoice(nn.Module):
         )
         if use_deepspeed and half and torch.cuda.is_available():
             import deepspeed
-            self.ds_engine = deepspeed.init_inference(model=self.inference_model,
+            # NOTE: deepspeed use torch.half torch.float16
+            self.ds_engine = deepspeed.init_inference(model=self.inference_model.half(),
                                                       mp_size=1,
                                                       replace_with_kernel_inject=False,
-                                                      dtype=torch.float16)
+                                                      dtype=torch.half)
             self.inference_model = self.ds_engine.module.eval()
         elif use_deepspeed and torch.cuda.is_available():
             import deepspeed
@@ -618,8 +650,16 @@ class UnifiedVoice(nn.Module):
 
         logits_processor = LogitsProcessorList([TypicalLogitsWarper(mass=typical_mass)]) if typical_sampling else LogitsProcessorList()
         max_length = trunc_index + self.max_mel_tokens - 1 if max_generate_length is None else trunc_index + max_generate_length
+        attention_mask = self.inference_model.prepare_attention_mask_for_generation(
+            inputs,
+            pad_token_id=self.stop_mel_token,
+            eos_token_id=self.stop_mel_token
+        )
+        #print(f"inputs: {inputs.shape}, attention_mask: {attention_mask.shape}")
         gen = self.inference_model.generate(inputs, bos_token_id=self.start_mel_token, pad_token_id=self.stop_mel_token,
                                             eos_token_id=self.stop_mel_token,
                                             max_length=max_length, logits_processor=logits_processor,
-                                            num_return_sequences=num_return_sequences, **hf_generate_kwargs)
+                                            num_return_sequences=num_return_sequences,
+                                            attention_mask=attention_mask,
+                                            **hf_generate_kwargs)
         return gen[:, trunc_index:]
