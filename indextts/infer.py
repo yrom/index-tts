@@ -582,7 +582,7 @@ class IndexTTS:
             # print(text_len)
             m_start_time = time.perf_counter()
             with torch.no_grad():
-                with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
+                with torch.amp.autocast(text_tokens.device.type, enabled=self.dtype is not None, dtype=self.dtype):
                     codes = \
                         self.gpt.inference_speech(auto_conditioning, text_tokens,
                                                     cond_mel_lengths=torch.tensor([auto_conditioning.shape[-1]],
@@ -615,7 +615,7 @@ class IndexTTS:
 
                 m_start_time = time.perf_counter()
                 
-                with torch.amp.autocast(self.device, enabled=self.dtype is not None, dtype=self.dtype):
+                with torch.amp.autocast(text_tokens.device.type, enabled=self.dtype is not None, dtype=self.dtype):
                     latent = \
                         self.gpt(auto_conditioning, text_tokens,
                                 torch.tensor([text_tokens.shape[-1]], device=text_tokens.device), codes,
