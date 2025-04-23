@@ -26,7 +26,7 @@ from indextts.utils.front import TextNormalizer
 
 class IndexTTS:
     def __init__(
-        self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", is_fp16=True, device=None, use_cuda_kernel=None,
+        self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", is_fp16=True, device=None, use_cuda_kernel=None, eanble_deepspeed=None,
     ):
         """
         Args:
@@ -85,7 +85,8 @@ class IndexTTS:
         else:
             self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
-        self.gpt.post_init_gpt2_config(use_deepspeed=detect_deepspeed(), kv_cache=True, half=self.is_fp16)
+        self.eanble_deepspeed = detect_deepspeed() if eanble_deepspeed is None else eanble_deepspeed
+        self.gpt.post_init_gpt2_config(use_deepspeed=self.eanble_deepspeed, kv_cache=True, half=self.is_fp16)
         self.stats["gpt_load_time"] = time.perf_counter() - start_time
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN

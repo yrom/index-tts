@@ -409,7 +409,7 @@ class UnifiedVoice(nn.Module):
         if use_deepspeed and half and torch.cuda.is_available():
             import deepspeed
             # NOTE: deepspeed use torch.half torch.float16
-            self.ds_engine = deepspeed.init_inference(model=self.inference_model,
+            self.ds_engine = deepspeed.init_inference(model=self.inference_model.half(),
                                                       mp_size=1,
                                                       replace_with_kernel_inject=False,
                                                       dtype=torch.half)
