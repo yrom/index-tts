@@ -234,7 +234,7 @@ docker build -t indextts:0.1-py311-torch260 \
   --build-arg PYTORCH_VERSION=2.6.0 \
   --build-arg PYTORCH_INDEX_URL="" \
   .
-
+# run image
 docker run -it \
   -p 7860:7860 \
   -v $(pwd)/checkpoints:/app/checkpoints \
@@ -246,11 +246,12 @@ docker run -it \
 
 You may need to set the `BASE_IMAGE`,`PYTORCH_INDEX_URL` and `PYPI_INDEX_URL` to a mirror site. e.g:
 ```bash
-docker build -t indextts:0.1 \
+# build with custom base image and index url
+docker build -t indextts:0.1 --platform linux/amd64 \
   --build-arg BASE_IMAGE=docker.1ms.run/continuumio/miniconda3:latest \
   --build-arg OVERRIDE_CONDA_CHANNEL=1  \
   --build-arg PYTORCH_INDEX_URL="https://mirrors.aliyun.com/pytorch-wheels/cu121" \
-  --build-arg PYPI_INDEX_URL="ttps://mirrors.aliyun.com/pypi/simple/" \
+  --build-arg PYPI_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/" \
   .
 ```
 

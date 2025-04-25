@@ -17,16 +17,14 @@ SHELL ["/bin/bash","-l", "-c"]
 
 # Conda environment setup
 RUN test "$OVERRIDE_CONDA_CHANNEL" -ne 1 || \
-    cat > ~/.condarc <<EOF
-channels:
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2
-show_channel_urls: true
-custom_channels:
-  conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
-  pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
-EOF
+    (echo "channels:" > ~/.condarc && \
+     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main" >> ~/.condarc && \
+     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r" >> ~/.condarc && \
+     echo "  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2" >> ~/.condarc && \
+     echo "show_channel_urls: true" >> ~/.condarc && \
+     echo "custom_channels:" >> ~/.condarc && \
+     echo "  conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud" >> ~/.condarc && \
+     echo "  pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud" >> ~/.condarc)
 RUN conda create -n index-tts python=${PYTHON_VERSION} && \
     echo "conda activate index-tts" >> ~/.bashrc
 
