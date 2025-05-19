@@ -180,9 +180,8 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 sentences_preview: gr.update(value=data, visible=True, type="array"),
             }
         else:
-            df = pd.DataFrame([], columns=["序号", "分句内容", "Token数"])
             return {
-                sentences_preview: gr.update(value=df)
+                sentences_preview: gr.update(value=[], type="array"),
             }
 
     input_text_single.change(
