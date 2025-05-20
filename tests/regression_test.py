@@ -18,7 +18,8 @@ if __name__ == "__main__":
     else:
         model_dir = "checkpoints"
     prompt_wav="tests/sample_prompt.wav"
-    tts = IndexTTS(cfg_path="checkpoints/config.yaml", model_dir="checkpoints", is_fp16=True, use_cuda_kernel=False)
+    tts = IndexTTS(cfg_path=os.path.join(model_dir, "config.yaml"), model_dir=model_dir, is_fp16=True, use_cuda_kernel=False)
+    print("Model version: ", tts.model_version or "1.0")
     test_cases = [
         {"method": "infer", "text": "晕 XUAN4 是 一 种 GAN3 觉"},
         {"method": "infer", "text": "大家好，我现在正在bilibili 体验 ai 科技，说实话，来之前我绝对想不到！AI技术已经发展到这样匪夷所思的地步了！"},
