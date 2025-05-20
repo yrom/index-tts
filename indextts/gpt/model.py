@@ -518,26 +518,30 @@ class UnifiedVoice(nn.Module):
             conds = conds.unsqueeze(1)
         return conds
 
-    def forward(self, speech_conditioning_latent, text_inputs, text_lengths, mel_codes, wav_lengths,
+    def forward(self, speech_conditioning_input, text_inputs, text_lengths, mel_codes, wav_lengths,
                 cond_mel_lengths=None, types=None, text_first=True, raw_mels=None, return_attentions=False,
-                return_latent=False, clip_inputs=False):
-        """
+                return_latent=False, clip_inputs=False, speech_conditioning_latent=None):
+        r"""
         Forward pass that uses both text and voice in either text conditioning mode or voice conditioning mode
         (actuated by `text_first`).
-
-        speech_conditioning_input: MEL float tensor, (b,1024)
+        Args:
+            speech_conditioning_input: MEL float tensor, (b, n_mels, s) for compute the conditioning embedding
+            cond_mel_lengths: long tensor, (b,) or (1, ) for compute the conditioning embedding
         text_inputs: long tensor, (b,t)
         text_lengths: long tensor, (b,)
         mel_inputs:  long tensor, (b,m)
-        wav_lengths: long tensor, (b,)
-        raw_mels: MEL float tensor (b,80,s)
+            wav_lengths: long tensor, (b,) or (1,) multiplied by ``mel_length_compression``
+            raw_mels: MEL float tensor (b,n_mels,s)
+            speech_conditioning_latent: optional (b, n_latents, dim) audio conditioning embedding by ``get_conditioning()``.
+                If not None, the `speech_conditioning_input` and `cond_mel_lengths` will be ignored
 
         If return_attentions is specified, only logits are returned.
         If return_latent is specified, loss & logits are not computed or returned. Only the predicted latents are returned.
         If clip_inputs is True, the inputs will be clipped to the smallest input size across each input modality.
         """
 
-        speech_conditioning_latent = self.get_conditioning(speech_conditioning_latent, cond_mel_lengths)
+        if speech_conditioning_latent is None:
+            speech_conditioning_latent = self.get_conditioning(speech_conditioning_input, cond_mel_lengths)
         # Types are expressed by expanding the text embedding space.
         if types is not None:
             text_inputs = text_inputs * (1 + types).unsqueeze(-1)
@@ -652,23 +656,38 @@ class UnifiedVoice(nn.Module):
         )
         fake_inputs[:, -1] = self.start_mel_token
         return fake_inputs, batched_mel_emb, attention_mask
-    def inference_speech(self, speech_conditioning_mel, text_inputs, cond_mel_lengths=None, input_tokens=None, num_return_sequences=1,
-                         max_generate_length=None, typical_sampling=False, typical_mass=.9, **hf_generate_kwargs):
+
+    def inference_speech(
+        self,
+        speech_conditioning_mel,
+        text_inputs,
+        cond_mel_lengths=None,
+        input_tokens=None,
+        speech_conditioning_latent=None,
+        num_return_sequences=1,
+        max_generate_length=None,
+        typical_sampling=False,
+        typical_mass=0.9,
+        **hf_generate_kwargs,
+    ):
         """
         Args:
             speech_conditioning_mel: (b, n_mels, frames) or (n_mels, frames)
             text_inputs: (b, L)
             cond_mel_lengths: lengths of the conditioning mel spectrograms in shape (b,) or (1,)
-            input_tokens: additional tokens for generation in shape (b, s) or (s,)
+            input_tokens: additional tokens for generation in shape (b, s) or (1,)
+            speech_conditioning_latent: (b, n_latents, dim) audio conditioning embedding by `get_conditioning()`. 
+                If not None, the `speech_conditioning_mel` and `cond_mel_lengths` will be ignored
             max_generate_length: limit the number of generated tokens
             hf_generate_kwargs: kwargs for `GPT2InferenceModel.generate(**hf_generate_kwargs)`
         """
-        if speech_conditioning_mel.ndim == 2:
-            speech_conditioning_mel = speech_conditioning_mel.unsqueeze(0)
-        if cond_mel_lengths is None:
-            cond_mel_lengths = torch.tensor([speech_conditioning_mel.shape[-1]], device=speech_conditioning_mel.device)
-        conds_latent = self.get_conditioning(speech_conditioning_mel, cond_mel_lengths)
-        input_ids, inputs_embeds, attention_mask = self.prepare_gpt_inputs(conds_latent, text_inputs)
+        if speech_conditioning_latent is None:
+            if speech_conditioning_mel.ndim == 2:
+                speech_conditioning_mel = speech_conditioning_mel.unsqueeze(0)
+            if cond_mel_lengths is None:
+                cond_mel_lengths = torch.tensor([speech_conditioning_mel.shape[-1]], device=speech_conditioning_mel.device)
+            speech_conditioning_latent = self.get_conditioning(speech_conditioning_mel, cond_mel_lengths)
+        input_ids, inputs_embeds, attention_mask = self.prepare_gpt_inputs(speech_conditioning_latent, text_inputs)
         self.inference_model.store_mel_emb(inputs_embeds)
         if input_tokens is None:
             inputs = input_ids

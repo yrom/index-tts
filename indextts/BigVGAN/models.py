@@ -198,17 +198,40 @@ class BigVGAN(torch.nn.Module):
 
         # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-    def forward(self, x, mel_ref, lens=None):
-        speaker_embedding = self.speaker_encoder(mel_ref, lens)
-        n_batch = x.size(0)
+    def get_speaker_embedding(self, mel_ref: torch.Tensor, lens=None):
+        """
+        Args:
+            mel_ref (Tensor): ``(b, num_mels, frames)`` mel spectrogram of reference audio
+            lens (Tensor): length of mel spectrogram
+        """
+        return self.speaker_encoder(mel_ref.transpose(1, 2), lens)
+
+    def forward(self, x, mel_ref=None, lens=None, speaker_embedding=None):
+        """
+        Args:
+            x (Tensor): ``(b, num_latents, dim)`` latent vector
+            mel_ref (Tensor): ``(b, num_mels, frames)`` mel spectrogram of reference audio.
+                 Or ``(b*2, num_mels, frames)`` pair of mel spectrograms,
+                 the second one is used for contrastive loss.
+            lens (Tensor): optional, lengths of batched mel spectrogram tensors
+            speaker_embedding (Tensor): optional, speaker embedding by ``get_speaker_embedding``. If not provided,
+                it will be computed from mel_ref on the fly.
+        Returns:
+            output (Tensor): ``(b, 1, t)`` generated audio, t =  * frames
+            contrastive_loss (Tensor): optional, contrastive loss between two mel spectrograms
+        """
         contrastive_loss = None
-        if n_batch * 2 == speaker_embedding.size(0):
-            spe_emb_chunk1, spe_emb_chunk2 = speaker_embedding[:n_batch, :, :], speaker_embedding[n_batch:, :, :]
-            contrastive_loss = self.cal_clip_loss(spe_emb_chunk1.squeeze(1), spe_emb_chunk2.squeeze(1), self.logit_scale.exp())
+        if speaker_embedding is None:
+            assert mel_ref is not None, "mel_ref must be provided"
+            # compute speaker embedding on the fly
+            speaker_embedding = self.get_speeker_embedding(mel_ref, lens)
+            n_batch = x.size(0)
+            if n_batch * 2 == speaker_embedding.size(0):
+                spe_emb_chunk1, spe_emb_chunk2 = speaker_embedding[:n_batch, :, :], speaker_embedding[n_batch:, :, :]
+                contrastive_loss = self.cal_clip_loss(spe_emb_chunk1.squeeze(1), spe_emb_chunk2.squeeze(1), self.logit_scale.exp())
 
-            speaker_embedding = speaker_embedding[:n_batch, :, :]
-        speaker_embedding = speaker_embedding.transpose(1, 2)
-
+                speaker_embedding = speaker_embedding[:n_batch, :, :]
+        speaker_embedding = speaker_embedding.transpose(1, 2) # (b, dim, 1)
         # upsample feat
         if self.feat_upsample:
             x = torch.nn.functional.interpolate(
