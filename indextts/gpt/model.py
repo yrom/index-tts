@@ -3,7 +3,7 @@ import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, GenerationMixin
+from transformers import GPT2Config, GPT2Model, GPT2PreTrainedModel, LogitsProcessorList, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.utils.model_parallel_utils import (assert_device_map,
                                                      get_device_map)
@@ -38,7 +38,7 @@ class ResBlock(nn.Module):
 
 
 class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):
-    def __init__(self, config, gpt, text_pos_emb, embeddings, norm, linear, kv_cache=False):
+    def __init__(self, config, gpt: GPT2Model, text_pos_emb, embeddings, norm, linear, kv_cache=False):
         super().__init__(config)
         # Note: the argument named `text_pos_emb` here actually represents the mel position embedding
         self.transformer = gpt
@@ -86,8 +86,14 @@ class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):
         token_type_ids = kwargs.get("token_type_ids", None)  # usually None
         if not self.kv_cache:
             past_key_values = None
-        # only last token for inputs_ids if past is defined in kwargs
-        if past_key_values:
+        past_length = 0
+        if past_key_values is not None:
+            if isinstance(past_key_values, (tuple, list)):
+                past_length = past_key_values[0][0].shape[2] if len(past_key_values) > 0 else 0
+            elif hasattr(past_key_values, "get_seq_length"): # Cache class in new version transformers
+                past_length = past_key_values.get_seq_length()
+        # cache dependent
+        if past_length > 0:
             input_ids = input_ids[:, -1].unsqueeze(-1)
             if token_type_ids is not None:
                 token_type_ids = token_type_ids[:, -1].unsqueeze(-1)
@@ -99,10 +105,10 @@ class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 0)
-            if past_key_values:
-                position_ids = position_ids[:, -1].unsqueeze(-1)
-        else:
-            position_ids = None
+
+        # use last position
+        if position_ids is not None and past_length > 0:
+            position_ids = position_ids[:, -1].unsqueeze(-1)
         return {
             "input_ids": input_ids,
             "past_key_values": past_key_values,
@@ -395,8 +401,9 @@ class UnifiedVoice(nn.Module):
             n_layer=self.layers,
             n_head=self.heads,
             gradient_checkpointing=False,
-            use_cache=True,
+            use_cache=kv_cache,
         )
+        self.gpt.config.use_cache = kv_cache
         self.inference_model = GPT2InferenceModel(
             gpt_config,
             self.gpt,
@@ -527,9 +534,9 @@ class UnifiedVoice(nn.Module):
         Args:
             speech_conditioning_input: MEL float tensor, (b, n_mels, s) for compute the conditioning embedding
             cond_mel_lengths: long tensor, (b,) or (1, ) for compute the conditioning embedding
-        text_inputs: long tensor, (b,t)
-        text_lengths: long tensor, (b,)
-        mel_inputs:  long tensor, (b,m)
+            text_inputs: long tensor, (b,t)
+            text_lengths: long tensor, (b,)
+            mel_inputs:  long tensor, (b,m)
             wav_lengths: long tensor, (b,) or (1,) multiplied by ``mel_length_compression``
             raw_mels: MEL float tensor (b,n_mels,s)
             speech_conditioning_latent: optional (b, n_latents, dim) audio conditioning embedding by ``get_conditioning()``.
@@ -605,7 +612,7 @@ class UnifiedVoice(nn.Module):
             text_inputs: (b, L)
         Returns:
             input_ids: (b, s+1) the input ids for the GPT2InferenceModel.generate()
-            inputs_embeds: (b, s+1, dim) the input embeddings for the GPT2InferenceModel.forward()
+            inputs_embeds: (b, s, dim) the input embeddings for the GPT2InferenceModel.forward()
             attention_mask: (b, s+1) the attention mask for the GPT2InferenceModel.generate()
         """
         b, L = text_inputs.shape[:2]

@@ -527,7 +527,7 @@ class IndexTTS:
         # save audio
         if output_path:
             # 直接保存音频到指定路径中
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
             print(">> wav file saved to:", output_path)
             return output_path

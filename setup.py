@@ -18,9 +18,9 @@ setup(
     install_requires=[
         "torch>=2.1.2",
         "torchaudio",
-        "transformers==4.36.2",
+        "transformers>=4.36.2,<=4.52.0",
         "accelerate",
-        "tokenizers==0.15.0",
+        "tokenizers>=0.15.0",
         "einops==0.8.1",
         "matplotlib==3.8.2",
         "omegaconf",
