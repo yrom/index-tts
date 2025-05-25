@@ -24,6 +24,8 @@ if __name__ == "__main__":
     tts = IndexTTS(cfg_path=f"{model_dir}/config.yaml", model_dir=model_dir, is_fp16=False, use_cuda_kernel=False)
     text = "晕 XUAN4 是 一 种 not very good GAN3 觉"
     text_tokens = tts.tokenizer.encode(text)
+    print("text:", text)
+    print("text tokens:", text_tokens)
     text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=tts.device).unsqueeze(0) # [1, L]
 
     audio, sr = torchaudio.load(audio_prompt)
@@ -58,7 +60,7 @@ if __name__ == "__main__":
         output_for_padded = []
         for t in pad_text_tokens:
             # test for each padded text
-            out = tts.gpt.inference_speech(auto_conditioning, text_tokens, **kwargs)
+            out = tts.gpt.inference_speech(auto_conditioning, t, **kwargs)
             output_for_padded.append(out.squeeze(0))
         # batched inference
         print("Inference padded text tokens as one batch...")
