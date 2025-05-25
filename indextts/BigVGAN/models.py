@@ -224,7 +224,7 @@ class BigVGAN(torch.nn.Module):
         if speaker_embedding is None:
             assert mel_ref is not None, "mel_ref must be provided"
             # compute speaker embedding on the fly
-            speaker_embedding = self.get_speeker_embedding(mel_ref, lens)
+            speaker_embedding = self.get_speaker_embedding(mel_ref, lens)
             n_batch = x.size(0)
             if n_batch * 2 == speaker_embedding.size(0):
                 spe_emb_chunk1, spe_emb_chunk2 = speaker_embedding[:n_batch, :, :], speaker_embedding[n_batch:, :, :]
