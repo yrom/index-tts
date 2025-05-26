@@ -1,4 +1,5 @@
 import os
+import platform
 import re
 import time
 from subprocess import CalledProcessError
@@ -18,7 +19,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from indextts.BigVGAN.models import BigVGAN as Generator
-from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
 
@@ -34,6 +34,7 @@ class IndexTTS:
         device=None,
         use_cuda_kernel=None,
         use_cache=True,
+        gpt_backend="transformers",
     ):
         """
         Args:
@@ -43,6 +44,7 @@ class IndexTTS:
             device (str): device to use (e.g., 'cuda:0', 'cpu'). If None, it will be set automatically based on the availability of CUDA or MPS.
             use_cuda_kernel (None | bool): whether to use BigVGan custom fused activation CUDA kernel, only for CUDA device.
             use_cache (bool): whether to use kv cache for GPT model, default is True.
+            gpt_backend (str): backend for evaluate GPT2 model. 'transformers' or 'mlx'.
         """
         if device is not None:
             self.device = device
@@ -81,27 +83,47 @@ class IndexTTS:
         # else:
         #     self.dvae.eval()
         # print(">> vqvae weights restored from:", self.dvae_path)
+
+        if (
+            platform.system() == "Darwin"
+            and platform.machine() == "arm64"
+            and (gpt_backend is None or gpt_backend == "mlx")
+        ):
+            # try MLX backend for Apple silicon
+            try:
+                from mlx_lm.models.gpt2 import GPT2Model  # noqa: F401
+                from indextts.gpt.model_v2 import UnifiedVoiceMLX as UnifiedVoice
+
+                self.gpt_backend = "mlx"
+            except ImportError:
+                print(">> The package `mlx-lm` is not installed. Falling back to `transformers`.")
+                print("  Retry after installing MLX `pip install mlx mlx-lm`.")
+                from indextts.gpt.model import UnifiedVoice
+
+                self.gpt_backend = "transformers"
+        else:
+            from indextts.gpt.model import UnifiedVoice
+
+            self.gpt_backend = "transformers"
+
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
         self.gpt = self.gpt.to(self.device)
-        if self.is_fp16:
-            self.gpt.eval().half()
-        else:
-            self.gpt.eval()
         print(">> GPT weights restored from:", self.gpt_path)
-        if self.is_fp16:
+        if self.is_fp16 and self.gpt_backend == "transformers":
             try:
-                import deepspeed
 
+                import deepspeed
                 use_deepspeed = True
             except (ImportError, OSError, CalledProcessError) as e:
                 use_deepspeed = False
                 print(f">> DeepSpeed加载失败，回退到标准推理: {e}")
-
             self.gpt.post_init_gpt2_config(use_deepspeed=use_deepspeed, kv_cache=self.use_cache, half=True)
+            self.gpt.eval().half()
         else:
             self.gpt.post_init_gpt2_config(use_deepspeed=False, kv_cache=self.use_cache, half=False)
+            self.gpt.eval()
 
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
@@ -336,7 +358,7 @@ class IndexTTS:
         )
 
     # 快速推理：对于“多句长文本”，可实现至少 2~10 倍以上的速度提升~ （First modified by sunnyboxs 2025-04-16）
-    def infer_fast(self, audio_prompt, text, output_path, verbose=False, max_text_tokens_per_sentence=100, sentences_bucket_max_size=4, **generation_kwargs):
+    def infer_fast(self, audio_prompt, text, output_path=None, verbose=False, max_text_tokens_per_sentence=100, sentences_bucket_max_size=4, **generation_kwargs):
         """
         Args:
             ``max_text_tokens_per_sentence``: 分句的最大token数，默认``100``，可以根据GPU硬件情况调整
@@ -361,6 +383,9 @@ class IndexTTS:
         # text_tokens
         text_tokens_list = self.tokenizer.tokenize(text)
 
+        if self.gpt_backend == "mlx" and max_text_tokens_per_sentence > 100:
+            warnings.warn(">> suggest limit max_text_tokens_per_sentence to 80 for mlx backend")
+            
         sentences = self.tokenizer.split_sentences(text_tokens_list, max_tokens_per_sentence=max_text_tokens_per_sentence)
         if verbose:
             print(">> text token count:", len(text_tokens_list))
@@ -538,7 +563,7 @@ class IndexTTS:
             return (sampling_rate, wav_data)
 
     # 原始推理模式
-    def infer(self, audio_prompt, text, output_path, verbose=False, max_text_tokens_per_sentence=120, **generation_kwargs):
+    def infer(self, audio_prompt, text, output_path=None, verbose=False, max_text_tokens_per_sentence=120, **generation_kwargs):
         print(">> start inference...")
         self._set_gr_progress(0, "start inference...")
         if verbose:
@@ -553,6 +578,8 @@ class IndexTTS:
         auto_conditioning = cond_mel.to(self.device)
         cond_mel_frame = auto_conditioning.shape[-1]
         text_tokens_list = self.tokenizer.tokenize(text)
+        if self.gpt_backend == "mlx" and max_text_tokens_per_sentence > 100:
+            warnings.warn(">> suggest limit max_text_tokens_per_sentence to 80 for mlx backend")
         sentences = self.tokenizer.split_sentences(text_tokens_list, max_text_tokens_per_sentence)
         if verbose:
             print("text token count:", len(text_tokens_list))

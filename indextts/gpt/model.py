@@ -17,7 +17,6 @@ from indextts.utils.typical_sampling import TypicalLogitsWarper
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
 
-
 class ResBlock(nn.Module):
     """
     Basic residual convolutional block that uses GroupNorm.
@@ -261,15 +260,18 @@ def build_hf_gpt_transformer(layers, model_dim, heads, max_mel_seq_len, max_text
     GPT-2 implemented by the HuggingFace library.
     """
     from transformers import GPT2Config, GPT2Model
-    gpt_config = GPT2Config(vocab_size=256,  # Unused.
-                            n_positions=max_mel_seq_len + max_text_seq_len,
-                            n_ctx=max_mel_seq_len + max_text_seq_len,
-                            n_embd=model_dim,
-                            n_layer=layers,
-                            n_head=heads,
-                            activation_function=activation_function or "gelu_new",
-                            gradient_checkpointing=checkpointing,
-                            use_cache=not checkpointing)
+    gpt_config = GPT2Config(
+        vocab_size=256,  # Unused.
+        n_positions=max_mel_seq_len + max_text_seq_len,
+        n_ctx=max_mel_seq_len + max_text_seq_len,
+        n_embd=model_dim,
+        n_layer=layers,
+        n_head=heads,
+        layer_norm_epsilon=1e-5,
+        activation_function=activation_function or "gelu_new",
+        gradient_checkpointing=checkpointing,
+        use_cache=not checkpointing,
+    )
     gpt = GPT2Model(gpt_config)
     # Override the built in positional embeddings
     del gpt.wpe
@@ -402,6 +404,7 @@ class UnifiedVoice(nn.Module):
             n_head=self.heads,
             gradient_checkpointing=False,
             use_cache=kv_cache,
+            tie_word_embeddings=False,
         )
         self.gpt.config.use_cache = kv_cache
         self.inference_model = GPT2InferenceModel(
@@ -429,6 +432,8 @@ class UnifiedVoice(nn.Module):
             self.inference_model = self.ds_engine.module.eval()
         else:
             self.inference_model = self.inference_model.eval()
+            if half:
+                self.inference_model.half()
 
         # self.inference_model = PrunedGPT2InferenceModel(gpt_config, self.gpt, self.mel_pos_embedding, self.mel_embedding, self.final_norm, self.mel_head)
         self.gpt.wte = self.mel_embedding
@@ -581,7 +586,6 @@ class UnifiedVoice(nn.Module):
             mel_inp = mel_codes
         mel_emb = self.mel_embedding(mel_inp)
         mel_emb = mel_emb + self.mel_pos_embedding(mel_codes)
-
         if text_first:
             # print(f"conds: {conds.shape}, text_emb: {text_emb.shape}, mel_emb: {mel_emb.shape}")
             text_logits, mel_logits = self.get_logits(conds, text_emb, self.text_head, mel_emb, self.mel_head, get_attns=return_attentions, return_latent=return_latent)
