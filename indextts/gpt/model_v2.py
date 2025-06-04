@@ -465,11 +465,14 @@ class UnifiedVoiceMLX(nn.Module):
             return torch.tensor(np.array(hidden_states, copy=False), device=text_inputs.device)
 
         text_logits = self.text_head(hidden_states[:, :text_inputs.shape[1]+1])
+        text_logits = text_logits.swapaxes(1, 2)
         mel_logits = self.mel_head(hidden_states[:, -mel_codes.shape[1]:])
-        text_logits = torch.tensor(text_logits.swapaxes(1, 2), device=text_inputs.device)
-        mel_logits = torch.tensor(mel_logits.swapaxes(1, 2), device=text_inputs.device)
-        loss_text = F.cross_entropy(text_logits, text_targets)
-        loss_mel = F.cross_entropy(mel_logits, mel_targets)
+        mel_logits = mel_logits.swapaxes(1, 2)
+        mx.eval(text_logits, mel_logits)
+        text_logits = torch.tensor(text_logits, device=text_inputs.device)
+        mel_logits = torch.tensor(mel_logits, device=text_inputs.device)
+        loss_text = F.cross_entropy(text_logits, text_targets.long())
+        loss_mel = F.cross_entropy(mel_logits, mel_targets.long(), ignore_index=self.stop_mel_token)
         return loss_text.mean(), loss_mel.mean(), mel_logits
 
     def prepare_gpt_inputs(

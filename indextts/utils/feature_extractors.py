@@ -48,3 +48,23 @@ class MelSpectrogramFeatures(FeatureExtractor):
         mel = self.mel_spec(audio)
         mel = safe_log(mel)
         return mel
+
+@torch.no_grad()
+def get_audio_melspectrogram(audio_path, sample_rate=24000, **kwargs):
+    """
+    Load an audio file and extract its mel spectrogram features.
+
+    Args:
+        audio_path (str): Path to the audio file.
+        **kwargs: Additional arguments for the MelSpectrogramFeatures.
+
+    Returns:
+        torch.Tensor: Extracted mel spectrogram features.
+    """
+    audio, sr = torchaudio.load(audio_path)
+    if audio.shape[0] > 1: # to mono
+        audio = audio.mean(dim=0, keepdim=True)
+    if sr != sample_rate:
+        audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=sample_rate)(audio)
+    feature_extractor = MelSpectrogramFeatures(sample_rate=sample_rate, **kwargs)
+    return feature_extractor(audio)
