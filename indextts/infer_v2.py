@@ -605,14 +605,11 @@ def find_most_similar_cosine(query_vector, matrix):
     return most_similar_index
 
 class QwenEmotion:
+
     def __init__(self, model_dir):
         self.model_dir = model_dir
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_dir,
-            torch_dtype="float16",  # "auto"
-            device_map="auto"
-        )
+        self.model_loaded = False
+        
         self.prompt = "文本情感分类"
         self.cn_key_to_en = {
             "高兴": "happy",
@@ -663,8 +660,19 @@ class QwenEmotion:
 
         return emotion_dict
 
+    def load_model(self):
+        if not self.model_loaded:
+            print(">> loading QwenEmotion model from:", self.model_dir)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_dir,
+                torch_dtype="float16",  # "auto"
+                device_map="auto"
+            )
+            self.model_loaded = True
     def inference(self, text_input):
         start = time.time()
+        self.load_model() # ensure model is loaded
         messages = [
             {"role": "system", "content": f"{self.prompt}"},
             {"role": "user", "content": f"{text_input}"}
