@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--model_dir", type=str, default="checkpoints", help="Path to the model directory. Default is 'checkpoints'")
     parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16 for inference if available")
     parser.add_argument("-f", "--force", action="store_true", default=False, help="Force to overwrite the output file if it exists")
-    parser.add_argument("-d", "--device", type=str, default=None, help="Device to run the model on (cpu, cuda, mps)." )
+    parser.add_argument("-d", "--device", type=str, default=None, help="Device to run the model on (cpu, cuda, mps, xpu)." )
     args = parser.parse_args()
     if len(args.text.strip()) == 0:
         print("ERROR: Text is empty.")
@@ -49,6 +49,8 @@ def main():
             args.device = "cuda:0"
         elif torch.mps.is_available():
             args.device = "mps"
+        elif torch.xpu.is_available():
+            args.device = "xpu"
         else:
             args.device = "cpu"
             args.fp16 = False # Disable FP16 on CPU
