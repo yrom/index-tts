@@ -5,7 +5,7 @@
 </div>
 
 <div align="center">
-<a href="doc/README_zh.md" style="font-size: 24px">简体中文</a> | 
+<a href="docs/README_zh.md" style="font-size: 24px">简体中文</a> | 
 <a href="README.md" style="font-size: 24px">English</a>
 </div>
 
