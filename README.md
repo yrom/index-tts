@@ -136,6 +136,18 @@ git lfs pull  # download large repository files
 3. Install the [uv](https://docs.astral.sh/uv/getting-started/installation/) package
    manager. It is *required* for a reliable, modern installation environment.
 
+> [!WARNING]
+> We **only** support the `uv` installation method. Other tools, such as `conda`
+> or `pip`, don't provide any guarantees that they will install the correct
+> dependency versions. You will almost certainly have *random bugs, error messages,*
+> *missing GPU acceleration, and various other problems* if you don't use `uv`.
+> Please *do not report any issues* if you use non-standard installations, since
+> almost all such issues are invalid.
+> 
+> Furthermore, `uv` is [up to 115x faster](https://github.com/astral-sh/uv/blob/main/BENCHMARKS.md)
+> than `pip`, which is another *great* reason to embrace the new industry-standard
+> for Python project management.
+
 4. Install required dependencies:
 
 We use `uv` to manage the project's dependency environment. The following command
@@ -151,21 +163,23 @@ If the download is slow, please try a *local mirror*, for example China:
 uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ```
 
-**Available Extra Features:**
+> [!TIP]
+> **Available Extra Features:**
+> 
+> - `--all-extras`: Automatically adds *every* extra feature listed below. You can
+>   remove this flag if you want to customize your installation choices.
+> - `--extra webui`: Adds WebUI support (recommended).
+> - `--extra deepspeed`: Adds DeepSpeed support (faster inference).
 
-- `--all-extras`: Automatically adds *every* extra feature listed below. You can
-  remove this flag if you want to customize your installation choices.
-- `--extra webui`: Adds WebUI support (recommended).
-- `--extra deepspeed`: Adds DeepSpeed support (faster inference).
-
-**Important (Windows):** The DeepSpeed library may be difficult to install for
-some Windows users. You can skip it by removing the `--all-extras` flag. If you
-want any of the other extra features above, you can manually add their specific
-feature flags instead.
-
-**Important (Linux/Windows):** If you see an error about CUDA during the installation,
-please ensure that you have installed NVIDIA's [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
-version 12.8 (or newer) on your system.
+> [!IMPORTANT]
+> **Important (Windows):** The DeepSpeed library may be difficult to install for
+> some Windows users. You can skip it by removing the `--all-extras` flag. If you
+> want any of the other extra features above, you can manually add their specific
+> feature flags instead.
+> 
+> **Important (Linux/Windows):** If you see an error about CUDA during the installation,
+> please ensure that you have installed NVIDIA's [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
+> version **12.8** (or newer) on your system.
 
 5. Download the required models:
 
@@ -185,6 +199,7 @@ uv tool install "modelscope"
 modelscope download --model IndexTeam/IndexTTS-2 --local_dir checkpoints
 ```
 
+> [!NOTE]
 > In addition to the above models, some small models will also be automatically
 > downloaded when the project is run for the first time. If your network environment
 > has slow access to HuggingFace, it is recommended to execute the following
