@@ -248,7 +248,7 @@ VRAM usage), DeepSpeed acceleration, compiled CUDA kernels for speed, etc. All
 available options can be seen via the following command:
 
 ```bash
-uv run python webui.py -h
+uv run webui.py -h
 ```
 
 Have fun!
