@@ -133,14 +133,25 @@ git clone https://github.com/index-tts/index-tts.git && cd index-tts
 git lfs pull  # download large repository files
 ```
 
-3. Install the [uv](https://docs.astral.sh/uv/getting-started/installation/) package
-   manager. It is *required* for a reliable, modern installation environment.
+3. Install the [uv package manager](https://docs.astral.sh/uv/getting-started/installation/).
+   It is *required* for a reliable, modern installation environment.
+
+> [!TIP]
+> **Quick & Easy Installation Method:**
+> 
+> There are many convenient ways to install the `uv` command on your computer.
+> Please check the link above to see all options. Alternatively, if you want
+> a very quick and easy method, you can install it as follows:
+> 
+> ```bash
+> pip install -U uv
+> ```
 
 > [!WARNING]
 > We **only** support the `uv` installation method. Other tools, such as `conda`
 > or `pip`, don't provide any guarantees that they will install the correct
 > dependency versions. You will almost certainly have *random bugs, error messages,*
-> *missing GPU acceleration, and various other problems* if you don't use `uv`.
+> ***missing GPU acceleration**, and various other problems* if you don't use `uv`.
 > Please *do not report any issues* if you use non-standard installations, since
 > almost all such issues are invalid.
 > 
@@ -151,7 +162,7 @@ git lfs pull  # download large repository files
 4. Install required dependencies:
 
 We use `uv` to manage the project's dependency environment. The following command
-will install the correct versions of all dependencies into your `.venv` directory.
+will install the correct versions of all dependencies into your `.venv` directory:
 
 ```bash
 uv sync --all-extras
