@@ -2,11 +2,13 @@
 <div align="center">
 <img src='../assets/index_icon.png' width="250"/>
 </div>
+
 <div align="center">
 <a href="README_zh.md" style="font-size: 24px">简体中文</a> | 
 <a href="../README.md" style="font-size: 24px">English</a>
 </div>
-## 👉🏻 IndexTTS2 👈🏻
+
+##  👉🏻 IndexTTS2 👈🏻
 
 <center><h3>IndexTTS2：情感表达与时长可控的自回归零样本语音合成突破</h3></center>
 
