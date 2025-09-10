@@ -298,8 +298,8 @@ class IndexTTS2:
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
               verbose=False, max_text_tokens_per_segment=120, **generation_kwargs):
-        print(">> start inference...")
-        self._set_gr_progress(0, "start inference...")
+        print(">> starting inference...")
+        self._set_gr_progress(0, "starting inference...")
         if verbose:
             print(f"origin text:{text}, spk_audio_prompt:{spk_audio_prompt},"
                   f" emo_audio_prompt:{emo_audio_prompt}, emo_alpha:{emo_alpha}, "
@@ -400,9 +400,10 @@ class IndexTTS2:
         self._set_gr_progress(0.1, "text processing...")
         text_tokens_list = self.tokenizer.tokenize(text)
         segments = self.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment)
+        segments_count = len(segments)
         if verbose:
             print("text_tokens_list:", text_tokens_list)
-            print("segments count:", len(segments))
+            print("segments count:", segments_count)
             print("max_text_tokens_per_segment:", max_text_tokens_per_segment)
             print(*segments, sep="\n")
         do_sample = generation_kwargs.pop("do_sample", True)
@@ -421,9 +422,11 @@ class IndexTTS2:
         gpt_forward_time = 0
         s2mel_time = 0
         bigvgan_time = 0
-        progress = 0
         has_warned = False
-        for sent in segments:
+        for seg_idx, sent in enumerate(segments):
+            self._set_gr_progress(0.2 + 0.7 * seg_idx / segments_count,
+                                  f"speech synthesis {seg_idx + 1}/{segments_count}...")
+
             text_tokens = self.tokenizer.convert_tokens_to_ids(sent)
             text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
             if verbose:
@@ -553,7 +556,8 @@ class IndexTTS2:
                 # wavs.append(wav[:, :-512])
                 wavs.append(wav.cpu())  # to cpu before saving
         end_time = time.perf_counter()
-        self._set_gr_progress(0.9, "save audio...")
+
+        self._set_gr_progress(0.9, "saving audio...")
         wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
         wav = torch.cat(wavs, dim=1)
         wav_length = wav.shape[-1] / sampling_rate
