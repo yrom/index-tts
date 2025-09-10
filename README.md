@@ -314,6 +314,10 @@ tts.infer(spk_audio_prompt='examples/voice_07.wav', text=text, output_path="gen.
    during inference; the default is `False`, and setting it to `True` enables
    randomness:
 
+> [!NOTE]
+> Enabling random sampling will reduce the voice cloning fidelity of the speech
+> synthesis.
+
 ```python
 from indextts.infer_v2 import IndexTTS2
 tts = IndexTTS2(cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, use_cuda_kernel=False, use_deepspeed=False)

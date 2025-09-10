@@ -261,9 +261,9 @@ tts.infer(spk_audio_prompt='examples/voice_07.wav', text=text, output_path="gen.
 ```
 
 4. 可直接指定8维情感向量 `[高兴, 愤怒, 悲伤, 害怕, 厌恶, 忧郁, 惊讶, 平静]`，可用`use_random`开启随机情感采样（默认False）：
+
 > [!NOTE]
 > 开启随机采样会降低音色的还原度。
-> 
 
 ```python
 from indextts.infer_v2 import IndexTTS2
