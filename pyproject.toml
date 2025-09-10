@@ -31,8 +31,8 @@ dependencies = [
   "accelerate==1.8.1",
   "cn2an==0.5.22",
   "cython==3.0.7",
-  "deepspeed==0.17.1",
   "descript-audiotools==0.7.2",
+  "einops>=0.8.1",
   "ffmpeg-python==0.2.0",
   "g2p-en==2.1.0",
   "jieba==0.42.1",
@@ -66,6 +66,10 @@ dependencies = [
 # To install the WebUI support, use `uv sync --extra webui` (or `--all-extras`).
 webui = [
   "gradio>=5.44.1",
+]
+# To install the DeepSpeed support, use `uv sync --extra deepspeed` (or `--all-extras`).
+deepspeed = [
+  "deepspeed==0.17.1",
 ]
 
 [project.urls]
