@@ -153,6 +153,8 @@ uv sync --all-extras
 如中国大陆地区用户下载缓慢，可选用国内镜像：
 
 ```bash
+uv sync --all-extras --default-index "https://mirrors.aliyun.com/pypi/simple"
+
 uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ```
 

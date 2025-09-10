@@ -174,9 +174,12 @@ will install the correct versions of all dependencies into your `.venv` director
 uv sync --all-extras
 ```
 
-If the download is slow, please try a *local mirror*, for example China:
+If the download is slow, please try a *local mirror*, for example any of these
+local mirrors in China (choose one mirror from the list below):
 
 ```bash
+uv sync --all-extras --default-index "https://mirrors.aliyun.com/pypi/simple"
+
 uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 ```
 
