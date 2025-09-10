@@ -1,14 +1,20 @@
 
+
 <div align="center">
 <img src='assets/index_icon.png' width="250"/>
 </div>
 
+<div align="center">
+<a href="doc/README_zh.md" style="font-size: 24px">简体中文</a> | 
+<a href="README.md" style="font-size: 24px">English</a>
+</div>
 
 ## 👉🏻 IndexTTS2 👈🏻
 
 <center><h3>IndexTTS2: A Breakthrough in Emotionally Expressive and Duration-Controlled Auto-Regressive Zero-Shot Text-to-Speech</h3></center>
 
 [![IndexTTS2](assets/IndexTTS2_banner.png)](assets/IndexTTS2_banner.png)
+
 
 <div align="center">
   <a href='https://arxiv.org/abs/2506.21619'>
