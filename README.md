@@ -189,7 +189,8 @@ uv sync --all-extras --default-index "https://mirrors.tuna.tsinghua.edu.cn/pypi/
 > - `--all-extras`: Automatically adds *every* extra feature listed below. You can
 >   remove this flag if you want to customize your installation choices.
 > - `--extra webui`: Adds WebUI support (recommended).
-> - `--extra deepspeed`: Adds DeepSpeed support (faster inference).
+> - `--extra deepspeed`: Adds DeepSpeed support (may speed up inference on some
+>   systems).
 
 > [!IMPORTANT]
 > **Important (Windows):** The DeepSpeed library may be difficult to install for
@@ -261,6 +262,12 @@ uv run webui.py -h
 ```
 
 Have fun!
+
+> [!IMPORTANT]
+> **DeepSpeed** *may* speed up inference on some systems, but it could also
+> make it slower. The performance impact is highly dependent on your specific
+> hardware, drivers and operating system. Please try with and without it,
+> to discover what works best on your personal system.
 
 
 #### 📝 Using IndexTTS2 in Python
