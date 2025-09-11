@@ -85,8 +85,6 @@ class IndexTTS2:
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
 
         self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path))
-        if not self.hybrid_model_device:
-            self.qwen_emo.load_model()
 
         self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
