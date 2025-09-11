@@ -195,8 +195,8 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 emo_upload = gr.Audio(label=i18n("上传情感参考音频"), type="filepath")
 
         # 情感随机采样
-        with gr.Row():
-            emo_random = gr.Checkbox(label=i18n("情感随机采样"),value=False,visible=False)
+        with gr.Row(visible=False) as emotion_randomize_group:
+            emo_random = gr.Checkbox(label=i18n("情感随机采样"), value=False)
 
         # 情感向量控制部分
         with gr.Group(visible=False) as emotion_vector_group:
@@ -321,7 +321,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
     emo_control_method.select(on_method_select,
         inputs=[emo_control_method],
         outputs=[emotion_reference_group,
-                 emo_random,
+                 emotion_randomize_group,
                  emotion_vector_group,
                  emo_text_group,
                  emo_weight_group]
