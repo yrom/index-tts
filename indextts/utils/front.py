@@ -510,6 +510,93 @@ class TextTokenizer:
         return de_tokenized_by_CJK_char(decoded, do_lower_case=do_lower_case)
 
     @staticmethod
+    def _is_quote_token(token: str) -> bool:
+        """检查是否为引号token"""
+        return token in ["'", "▁'", '"', '▁"']
+
+    @staticmethod
+    def _count_quotes_in_segment(segment: List[str]) -> int:
+        """统计segment中引号的数量"""
+        return sum(1 for token in segment if TextTokenizer._is_quote_token(token))
+
+    @staticmethod
+    def _is_double_hyphen_at(tokens: List[str], pos: int) -> bool:
+        """
+        检查当前位置是否为双连字符模式
+        双连字符模式: "▁" + "-" + "-" (三个token) 或在某个"-"位置且前一个也是"-"
+
+        Args:
+            tokens: token列表
+            pos: 当前位置
+
+        Returns:
+            True表示当前位置是双连字符模式的一部分
+        """
+        if pos < 0 or pos >= len(tokens):
+            return False
+
+        # 检查模式1: ▁ + - + - (在第二个"-"位置检测)
+        if tokens[pos] == "-" and pos >= 2:
+            # 检查前面是否为: ▁, -
+            if tokens[pos - 1] == "-" and tokens[pos - 2] == "▁":
+                return True
+
+        # 检查模式2: ▁ + - + - (在第一个"-"位置检测，需要向后看)
+        if tokens[pos] == "-" and pos >= 1 and pos + 1 < len(tokens):
+            # 检查是否为: ▁, -, -
+            if tokens[pos - 1] == "▁" and tokens[pos + 1] == "-":
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_name_hyphen(tokens: List[str], pos: int) -> bool:
+        """
+        判断当前位置的连字符是否为人名连接符
+        人名连接符模式: ▁ + - + ▁ (三个token，单连字符)
+        句子分隔符模式: ▁ + - + - (三个token，双连字符)
+
+        Args:
+            tokens: token列表
+            pos: 当前'-'的位置
+
+        Returns:
+            True表示是人名连接符(不应该切分), False表示可以切分
+        """
+        if pos < 0 or pos >= len(tokens):
+            return False
+
+        current_token = tokens[pos]
+
+        # 如果不是连字符token，返回False
+        if current_token != "-":
+            return False
+
+        # 检查是否为双连字符模式 (▁ + - + -)
+        if TextTokenizer._is_double_hyphen_at(tokens, pos):
+            # 这是双连字符，可以切分
+            return False
+
+        # 检查前后是否有token
+        has_prev = pos > 0
+        has_next = pos < len(tokens) - 1
+
+        if not (has_prev and has_next):
+            # 如果在开头或结尾，认为不是人名连接符
+            return False
+
+        prev_token = tokens[pos - 1]
+        next_token = tokens[pos + 1]
+
+        # 人名连接符模式: ▁ + - + ▁
+        # 前后都是空格token，说明这是人名连接符
+        if prev_token == "▁" and next_token == "▁":
+            return True
+
+        # 其他情况认为可以切分
+        return False
+
+    @staticmethod
     def split_segments_by_token(
         tokenized_str: List[str],
         split_tokens: List[str],
@@ -517,76 +604,223 @@ class TextTokenizer:
         quick_streaming_tokens: int = 0
     ) -> List[List[str]]:
         """
-        将tokenize后的结果按特定token进一步分割
+        将tokenize后的结果按语义优先级进行分割
+
+        分割优先级:
+        1. 强语义边界: 句号、问号、感叹号、省略号 (split_tokens传入的)
+        2. 中等语义边界: 分号、双连字符(--)
+        3. 弱语义边界: 逗号 (但需要考虑引号配对)
+        4. 如果超过长度限制，强制按长度切分
+
+        特殊处理:
+        - 引号需要成对出现在同一segment中
+        - 单个连字符(▁-)可能是人名连接符，不切分
+        - 双连字符(▁--)是明确的分隔符，可以切分
+
+        Args:
+            tokenized_str: tokenize后的字符串列表
+            split_tokens: 主要分割token (通常是强语义边界如., !, ?等)
+            max_text_tokens_per_segment: 每个segment的最大token数
+            quick_streaming_tokens: 快速流式输出的token数阈值
+
+        Returns:
+            分割后的segment列表
         """
-        # 处理特殊情况
         if len(tokenized_str) == 0:
             return []
-        segments: List[List[str]] = []
-        current_segment = []
-        current_segment_tokens_len = 0
-        for i in range(len(tokenized_str)):
-            token = tokenized_str[i]
-            current_segment.append(token)
-            current_segment_tokens_len += 1
-            if not  ("," in split_tokens or "▁," in split_tokens ) and ("," in current_segment or "▁," in current_segment): 
-                # 如果当前tokens中有,，则按,分割
-                sub_segments = TextTokenizer.split_segments_by_token(
-                    current_segment, [",", "▁,"], max_text_tokens_per_segment=max_text_tokens_per_segment, quick_streaming_tokens = quick_streaming_tokens
-                )
-            elif "-" not in split_tokens and "-" in current_segment:
-                # 没有,，则按-分割
-                sub_segments = TextTokenizer.split_segments_by_token(
-                    current_segment, ["-"], max_text_tokens_per_segment=max_text_tokens_per_segment, quick_streaming_tokens = quick_streaming_tokens
-                )
-            elif current_segment_tokens_len <= max_text_tokens_per_segment:
-                if token in split_tokens and current_segment_tokens_len > 2:
-                    if i < len(tokenized_str) - 1:
-                        if tokenized_str[i + 1] in ["'", "▁'"]:
-                            # 后续token是'，则不切分
-                            current_segment.append(tokenized_str[i + 1])
-                            i += 1
-                    segments.append(current_segment)
-                    current_segment = []
-                    current_segment_tokens_len = 0
-                continue
-            # 如果当前tokens的长度超过最大限制
-            else:
-                # 按照长度分割
-                sub_segments = []
-                for j in range(0, len(current_segment), max_text_tokens_per_segment):
-                    if j + max_text_tokens_per_segment < len(current_segment):
-                        sub_segments.append(current_segment[j : j + max_text_tokens_per_segment])
-                    else:
-                        sub_segments.append(current_segment[j:])
+
+        # 定义分割优先级
+        strong_boundaries = set(split_tokens)  # 强边界: ., !, ?, ...等
+        medium_boundaries = {";", "▁;"}  # 中等边界: 分号 (双连字符单独处理)
+        weak_boundaries = {",", "▁,"}  # 弱边界: 逗号
+
+        def should_split_at(pos: int, tokens: List[str], boundary_set: set) -> bool:
+            """
+            判断是否应该在某个位置切分
+
+            特殊处理:
+            - 双连字符(▁ + - + -): 在第二个"-"位置切分(作为中等边界)
+            - 单连字符(▁ + - + ▁): 如果是人名连接符则不切分
+            """
+            if pos < 0 or pos >= len(tokens):
+                return False
+
+            token = tokens[pos]
+
+            # 特殊处理: 检查是否为双连字符的第二部分 (▁ + - + -)
+            # 在第二个"-"处切分，作为中等边界处理
+            if token == "-" and TextTokenizer._is_double_hyphen_at(tokens, pos):
+                # 这是双连字符，按中等边界处理
+                return boundary_set == medium_boundaries
+
+            # 检查是否在边界集合中
+            if token not in boundary_set:
+                return False
+
+            # 特殊处理: 如果是连字符，检查是否为人名连接符
+            if token == "-":
+                # 单连字符需要判断是否为人名连接符
+                return not TextTokenizer._is_name_hyphen(tokens, pos)
+
+            # 其他边界token正常切分
+            return True
+
+        def find_best_split_point(segment: List[str], max_len: int) -> int:
+            """
+            在segment中找到最佳切分点
+            优先级: 强边界 > 中等边界 > 弱边界(考虑引号) > 强制切分
+
+            Returns:
+                最佳切分位置(切分后，segment[:pos+1]为第一段)，-1表示不切分
+            """
+            if len(segment) <= max_len:
+                return -1
+
+            # 尝试在max_len范围内找到最佳切分点
+            # 从后往前找，优先使用靠近max_len的切分点
+
+            # 1. 尝试强边界
+            for i in range(min(len(segment), max_len) - 1, 1, -1):
+                if should_split_at(i, segment, strong_boundaries) and i > 2:
+                    return i
+
+            # 2. 尝试中等边界
+            for i in range(min(len(segment), max_len) - 1, 1, -1):
+                if should_split_at(i, segment, medium_boundaries) and i > 2:
+                    return i
+
+            # 3. 尝试弱边界(逗号)，但要考虑引号配对
+            # 首先找到所有可能的切分点
+            candidate_split_points = []
+            for i in range(min(len(segment), max_len) - 1, 1, -1):
+                if should_split_at(i, segment, weak_boundaries) and i > 2:
+                    # 检查切分后引号是否配对
+                    left_part = segment[:i+1]
+                    quote_count = TextTokenizer._count_quotes_in_segment(left_part)
+                    if quote_count % 2 == 0:  # 引号成对
+                        candidate_split_points.append(i)
+
+            # 找到所有人名连接符的位置
+            name_hyphen_positions = []
+            for j in range(len(segment)):
+                if segment[j] == "-" and TextTokenizer._is_name_hyphen(segment, j):
+                    name_hyphen_positions.append(j)
+
+            # 选择最佳切分点：优先选择不会切断人名的点
+            for split_pos in candidate_split_points:
+                # 检查这个切分点是否会把人名分开
+                # 如果人名连接符在切分点前后15个token内，则可能切断人名
+                will_split_name = False
+                for name_pos in name_hyphen_positions:
+                    distance = abs(split_pos - name_pos)
+                    # 如果距离小于15，说明可能会切断人名
+                    if distance < 15:
+                        will_split_name = True
+                        break
+
+                if not will_split_name:
+                    return split_pos
+
+            # 如果所有候选点都会切断人名，返回最后一个(最靠近max_len的)
+            if candidate_split_points:
+                return candidate_split_points[0]
+
+            # 4. 强制切分: 如果都找不到，在max_len处强制切
+            if len(segment) > max_len:
                 warnings.warn(
-                    f"The tokens length of segment exceeds limit: {max_text_tokens_per_segment}, "
-                    f"Tokens in segment: {current_segment}."
-                    "Maybe unexpected behavior",
+                    f"Force splitting segment at max_len={max_len}. "
+                    f"Segment length: {len(segment)}, tokens: {segment[:20]}...",
                     RuntimeWarning,
                 )
-            segments.extend(sub_segments)
-            current_segment = []
-            current_segment_tokens_len = 0
-        if current_segment_tokens_len > 0:
-            assert current_segment_tokens_len <= max_text_tokens_per_segment
-            segments.append(current_segment)
-        # 如果相邻的句子加起来长度小于最大限制，且此前token总数超过quick_streaming_tokens，则合并
-        merged_segments = []
-        total_token = 0
-        for segment in segments:
-            total_token += len(segment)
+                return max_len - 1
+
+            return -1
+
+        # 第一阶段: 按强边界进行初步分割
+        initial_segments = []
+        current_segment = []
+
+        i = 0
+        while i < len(tokenized_str):
+            token = tokenized_str[i]
+            current_segment.append(token)
+
+            # 检查是否在强边界处切分
+            if should_split_at(i, tokenized_str, strong_boundaries) and len(current_segment) > 2:
+                # 检查下一个token是否是引号(避免在"句子."后的"处切分)
+                if i + 1 < len(tokenized_str) and TextTokenizer._is_quote_token(tokenized_str[i + 1]):
+                    # 将引号也包含进来
+                    current_segment.append(tokenized_str[i + 1])
+                    i += 1
+
+                initial_segments.append(current_segment)
+                current_segment = []
+
+            i += 1
+
+        # 添加最后一个segment
+        if current_segment:
+            initial_segments.append(current_segment)
+
+        # 第二阶段: 处理超长segment，进行二次切分
+        final_segments = []
+        for segment in initial_segments:
             if len(segment) == 0:
                 continue
+
+            # 如果segment超长，递归切分
+            while len(segment) > max_text_tokens_per_segment:
+                split_pos = find_best_split_point(segment, max_text_tokens_per_segment)
+
+                if split_pos <= 0:
+                    # 无法找到合适切分点，强制切分
+                    final_segments.append(segment[:max_text_tokens_per_segment])
+                    segment = segment[max_text_tokens_per_segment:]
+                else:
+                    # 在找到的切分点处切分
+                    final_segments.append(segment[:split_pos + 1])
+                    segment = segment[split_pos + 1:]
+
+            # 添加剩余部分
+            if segment:
+                final_segments.append(segment)
+
+        # 第三阶段: 智能合并短segment
+        merged_segments = []
+        total_tokens = 0
+
+        for segment in final_segments:
+            total_tokens += len(segment)
+
+            if len(segment) == 0:
+                continue
+
             if len(merged_segments) == 0:
                 merged_segments.append(segment)
-            elif len(merged_segments[-1]) + len(segment) <= max_text_tokens_per_segment and total_token > quick_streaming_tokens:
-                merged_segments[-1] = merged_segments[-1] + segment
-            # 或小于最大长度限制的一半，则合并
-            elif len(merged_segments[-1]) + len(segment) <= max_text_tokens_per_segment / 2:
-                merged_segments[-1] = merged_segments[-1] + segment
             else:
-                merged_segments.append(segment)
+                prev_segment = merged_segments[-1]
+                combined_len = len(prev_segment) + len(segment)
+
+                # 合并条件:
+                # 1. 总长度不超过max_len
+                # 2. 满足以下任一条件:
+                #    a) 已经积累了足够的tokens(quick_streaming) 且合并后不超限
+                #    b) 当前segment很短(< max_len/2)
+                should_merge = False
+
+                if combined_len <= max_text_tokens_per_segment:
+                    if total_tokens > quick_streaming_tokens:
+                        # 已积累足够tokens，可以合并
+                        should_merge = True
+                    elif len(segment) <= max_text_tokens_per_segment / 2:
+                        # 当前segment很短，合并以提高效率
+                        should_merge = True
+
+                if should_merge:
+                    merged_segments[-1] = prev_segment + segment
+                else:
+                    merged_segments.append(segment)
+
         return merged_segments
 
     punctuation_marks_tokens = [
