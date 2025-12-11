@@ -9,7 +9,6 @@ import librosa
 import torch
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
-import gc
 from functools import lru_cache
 
 import warnings
@@ -362,15 +361,12 @@ class IndexTTS2:
 
         return emo_vector
 
-    def _clear_gpu_cache(self, force_gc=False):
-        """Clear GPU cache and optionally run garbage collection"""
+    def _clear_gpu_cache(self):
+        """Clear GPU cache to free unused memory"""
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
         elif hasattr(torch, "xpu") and self.device == "xpu":
             torch.xpu.empty_cache()
-
-        if force_gc:
-            gc.collect()
 
     def _reset_gpt_cache(self):
         """Reset GPT model cache to free memory"""
@@ -406,14 +402,9 @@ class IndexTTS2:
         """Unload QwenEmotion model to free GPU memory"""
         if self.qwen_emo is not None:
             print(">> Unloading QwenEmotion model to free memory...")
-            # Delete model and tokenizer
-            if hasattr(self.qwen_emo, 'model'):
-                del self.qwen_emo.model
-            if hasattr(self.qwen_emo, 'tokenizer'):
-                del self.qwen_emo.tokenizer
-            del self.qwen_emo
+            # Clear references to allow garbage collection
             self.qwen_emo = None
-            self._clear_gpu_cache(force_gc=True)
+            self._clear_gpu_cache()
             print(">> QwenEmotion model unloaded")
 
     # 原始推理模式
@@ -491,16 +482,12 @@ class IndexTTS2:
         # 如果参考音频改变了，才需要重新生成, 提升速度
         if self.cache_spk_cond is None or self.cache_spk_audio_prompt != spk_audio_prompt:
             if self.cache_spk_cond is not None:
-                # Explicitly delete cached tensors before clearing
-                del self.cache_spk_cond
-                del self.cache_s2mel_style
-                del self.cache_s2mel_prompt
-                del self.cache_mel
+                # Clear cached tensors
                 self.cache_spk_cond = None
                 self.cache_s2mel_style = None
                 self.cache_s2mel_prompt = None
                 self.cache_mel = None
-                self._clear_gpu_cache(force_gc=True)
+                self._clear_gpu_cache()
             audio,sr = self._load_and_cut_audio(spk_audio_prompt,15,verbose)
             audio_22k = torchaudio.transforms.Resample(sr, 22050)(audio)
             audio_16k = torchaudio.transforms.Resample(sr, 16000)(audio)
@@ -532,10 +519,7 @@ class IndexTTS2:
             self.cache_s2mel_prompt = prompt_condition
             self.cache_spk_audio_prompt = spk_audio_prompt
             self.cache_mel = ref_mel
-
-            # Clean up intermediate tensors
-            del audio, audio_22k, audio_16k, inputs, input_features, attention_mask
-            del S_ref, ref_target_lengths, feat
+            # Intermediate tensors will be automatically cleaned up by Python's garbage collector
         else:
             style = self.cache_s2mel_style
             prompt_condition = self.cache_s2mel_prompt
@@ -557,10 +541,9 @@ class IndexTTS2:
 
         if self.cache_emo_cond is None or self.cache_emo_audio_prompt != emo_audio_prompt:
             if self.cache_emo_cond is not None:
-                # Explicitly delete cached emotion tensor
-                del self.cache_emo_cond
+                # Clear cached emotion tensor
                 self.cache_emo_cond = None
-                self._clear_gpu_cache(force_gc=True)
+                self._clear_gpu_cache()
             emo_audio, _ = self._load_and_cut_audio(emo_audio_prompt,15,verbose,sr=16000)
             emo_inputs = self.extract_features(emo_audio, sampling_rate=16000, return_tensors="pt")
             emo_input_features = emo_inputs["input_features"]
@@ -571,9 +554,7 @@ class IndexTTS2:
 
             self.cache_emo_cond = emo_cond_emb
             self.cache_emo_audio_prompt = emo_audio_prompt
-
-            # Clean up intermediate tensors
-            del emo_audio, emo_inputs, emo_input_features, emo_attention_mask
+            # Intermediate tensors will be automatically cleaned up
         else:
             emo_cond_emb = self.cache_emo_cond
 
@@ -756,8 +737,7 @@ class IndexTTS2:
                         gen_wav_length += silence.shape[-1] / sampling_rate
                         yield silence
 
-                # Clean up intermediate tensors to prevent memory leak
-                del wav, codes, latent, S_infer, cond, cat_condition, vc_target
+                # Clear CUDA cache periodically to manage memory
                 if seg_idx % 5 == 4:  # Clear cache every 5 segments
                     self._clear_gpu_cache()
 
@@ -772,7 +752,6 @@ class IndexTTS2:
             print(f">> Generated audio length: {gen_wav_length:.2f} seconds")
             print(f">> RTF: {(end_time - start_time) / gen_wav_length:.4f}")
             self._set_gr_progress(1.0, "inference completed.")
-            del wavs
             return 
         self._set_gr_progress(0.9, "saving audio...")
         wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
@@ -798,10 +777,9 @@ class IndexTTS2:
             # Gradio的格式要求
             wav_data = wav.numpy().T
             yield (sampling_rate, wav_data)
-        del wavs, wav
         # Reset GPT cache and clear GPU memory after inference
         self._reset_gpt_cache()
-        self._clear_gpu_cache(force_gc=True)
+        self._clear_gpu_cache()
 
 
 def find_most_similar_cosine(query_vector, matrix):
@@ -924,8 +902,6 @@ class QwenEmotion:
             # print(">>  after vec swap", content)
 
         result = self.convert(content)
-        # Clean up intermediate tensors to prevent memory leak
-        del model_inputs, generated_ids, output_ids
         print(f">> QwenEmotion inference took {time.perf_counter() - start:.2f} seconds")
         return result
 

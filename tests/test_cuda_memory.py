@@ -66,7 +66,9 @@ def test_multiple_inferences(model_dir, enable_emo_text=False):
     for i, text in enumerate(test_texts):
         emo_text = emo_texts[i % len(emo_texts)] if enable_emo_text else None
         audio_prompt = prompt_wavs[i % len(prompt_wavs)]
-        print(f"\nTest {i+1}/5: {text}, Emo Text: {emo_text if emo_text else 'N/A'}, Audio Prompt: {audio_prompt}")
+        print(
+            f"\nTest {i + 1}/{len(test_texts)}: {text}, Emo Text: {emo_text if emo_text else 'N/A'}, Audio Prompt: {audio_prompt}"
+        )
         print("[==] waiting 10 seconds before inference...")
         time.sleep(10)
         # Record memory before inference

@@ -29,3 +29,7 @@ desktop.ini
 /checkpoints/*
 !/checkpoints/*.yaml
 /outputs/
+
+# Test outputs and reports
+/test_reports/
+test_output_*.wav
