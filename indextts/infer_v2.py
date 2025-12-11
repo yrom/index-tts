@@ -9,6 +9,8 @@ import librosa
 import torch
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
+import gc
+from functools import lru_cache
 
 import warnings
 
@@ -80,8 +82,10 @@ class IndexTTS2:
         self.use_accel = use_accel
         self.use_torch_compile = use_torch_compile
 
-        self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path))
-
+        # Lazy loading: QwenEmotion will be loaded only when use_emo_text=True
+        self.qwen_emo = None
+        self._qwen_emo_path = os.path.join(self.model_dir, self.cfg.qwen_emo_path)
+        self._infer_emotion_vector_wrapper = lru_cache(maxsize=10)(self.infer_emotion_vector)
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
@@ -282,16 +286,21 @@ class IndexTTS2:
         code_lens = torch.tensor(code_lens, dtype=torch.long, device=device)
         return codes, code_lens
 
-    def interval_silence(self, wavs, sampling_rate=22050, interval_silence=200):
+    def interval_silence(self, channel_size, sampling_rate=22050, interval_silence=200):
         """
-        Silences to be insert between generated segments.
-        """
+        Create a silence tensor to be inserted between generated segments.
 
-        if not wavs or interval_silence <= 0:
-            return wavs
+        Args:
+            sampling_rate: Audio sampling rate
+            interval_silence: Silence duration in milliseconds
+
+        Returns:
+            torch.Tensor: Silence tensor with shape (channels, samples), or None if invalid
+        """
+        if interval_silence <= 0:
+            return None
 
         # get channel_size
-        channel_size = wavs[0].size(0)
         # get silence tensor
         sil_dur = int(sampling_rate * interval_silence / 1000.0)
         return torch.zeros(channel_size, sil_dur)
@@ -353,31 +362,91 @@ class IndexTTS2:
 
         return emo_vector
 
+    def _clear_gpu_cache(self, force_gc=False):
+        """Clear GPU cache and optionally run garbage collection"""
+        if self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+        elif hasattr(torch, "xpu") and self.device == "xpu":
+            torch.xpu.empty_cache()
+
+        if force_gc:
+            gc.collect()
+
+    def _reset_gpt_cache(self):
+        """Reset GPT model cache to free memory"""
+        # Reset accel engine KV cache if using acceleration
+        if self.use_accel and hasattr(self.gpt, 'accel_engine') and self.gpt.accel_engine is not None:
+            try:
+                from indextts.accel.attention import reset_forward_context
+                reset_forward_context()
+                # Clear current sequences in accel engine
+                if hasattr(self.gpt.accel_engine, 'current_sequences'):
+                    self.gpt.accel_engine.current_sequences = []
+                # Reset KV cache manager
+                if hasattr(self.gpt.accel_engine, 'kv_manager'):
+                    self.gpt.accel_engine.kv_manager.seq_to_blocks.clear()
+            except Exception as e:
+                # Silently ignore if reset fails (accel engine may not be initialized)
+                pass
+
+        # Clear cached mel embedding in GPT inference model
+        if hasattr(self.gpt, 'gpt_inference') and self.gpt.gpt_inference is not None:
+            if hasattr(self.gpt.gpt_inference, 'cached_mel_emb'):
+                self.gpt.gpt_inference.cached_mel_emb = None
+
+    def _load_qwen_emo(self):
+        """Lazy load QwenEmotion model only when needed"""
+        if self.qwen_emo is None:
+            print(">> Loading QwenEmotion model for text-based emotion detection...")
+            self.qwen_emo = QwenEmotion(self._qwen_emo_path)
+            print(">> QwenEmotion model loaded successfully")
+        return self.qwen_emo
+
+    def _unload_qwen_emo(self):
+        """Unload QwenEmotion model to free GPU memory"""
+        if self.qwen_emo is not None:
+            print(">> Unloading QwenEmotion model to free memory...")
+            # Delete model and tokenizer
+            if hasattr(self.qwen_emo, 'model'):
+                del self.qwen_emo.model
+            if hasattr(self.qwen_emo, 'tokenizer'):
+                del self.qwen_emo.tokenizer
+            del self.qwen_emo
+            self.qwen_emo = None
+            self._clear_gpu_cache(force_gc=True)
+            print(">> QwenEmotion model unloaded")
+
     # 原始推理模式
     def infer(self, spk_audio_prompt, text, output_path,
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
               verbose=False, max_text_tokens_per_segment=120, stream_return=False, more_segment_before=0, **generation_kwargs):
+        generator = self.infer_generator(
+            spk_audio_prompt, text, output_path,
+            emo_audio_prompt, emo_alpha,
+            emo_vector,
+            use_emo_text, emo_text, use_random, interval_silence,
+            verbose, max_text_tokens_per_segment, stream_return, more_segment_before, **generation_kwargs
+        )
         if stream_return:
-            return self.infer_generator(
-                spk_audio_prompt, text, output_path,
-                emo_audio_prompt, emo_alpha,
-                emo_vector,
-                use_emo_text, emo_text, use_random, interval_silence,
-                verbose, max_text_tokens_per_segment, stream_return, more_segment_before, **generation_kwargs
-            )
-        else:
-            try:
-                return list(self.infer_generator(
-                    spk_audio_prompt, text, output_path,
-                    emo_audio_prompt, emo_alpha,
-                    emo_vector,
-                    use_emo_text, emo_text, use_random, interval_silence,
-                    verbose, max_text_tokens_per_segment, stream_return, more_segment_before, **generation_kwargs
-                ))[0]
-            except IndexError:
-                return None
+            return generator
+        return next(generator, None)
+
+    def infer_emotion_vector(self, emo_text, verbose=False):
+        # Lazy load QwenEmotion only when needed
+        try:
+            qwen_emo = self._load_qwen_emo()
+            # Use IndexTTS2's cache for emotion inference
+            emo_dict = qwen_emo.inference(emo_text)
+            if verbose:
+                print(f"detected emotion vectors from text: {emo_text} -> {emo_dict}")
+            # convert ordered dict to list of vectors; the order is VERY important!
+            emo_vector = list(emo_dict.values())
+        except Exception as e:
+            print(f">> Error during emotion vector inference: {e!r}")
+            emo_vector = None
+        return emo_vector
 
     def infer_generator(self, spk_audio_prompt, text, output_path,
               emo_audio_prompt=None, emo_alpha=1.0,
@@ -399,13 +468,8 @@ class IndexTTS2:
             emo_audio_prompt = None
 
         if use_emo_text:
-            # automatically generate emotion vectors from text prompt
-            if emo_text is None:
-                emo_text = text  # use main text prompt
-            emo_dict = self.qwen_emo.inference(emo_text)
-            print(f"detected emotion vectors from text: {emo_dict}")
-            # convert ordered dict to list of vectors; the order is VERY important!
-            emo_vector = list(emo_dict.values())
+            # automatically generate emotion vectors from text prompt               
+            emo_vector = self._infer_emotion_vector_wrapper(emo_text, verbose)
 
         if emo_vector is not None:
             # we have emotion vectors; they can't be blended via alpha mixing
@@ -427,11 +491,16 @@ class IndexTTS2:
         # 如果参考音频改变了，才需要重新生成, 提升速度
         if self.cache_spk_cond is None or self.cache_spk_audio_prompt != spk_audio_prompt:
             if self.cache_spk_cond is not None:
+                # Explicitly delete cached tensors before clearing
+                del self.cache_spk_cond
+                del self.cache_s2mel_style
+                del self.cache_s2mel_prompt
+                del self.cache_mel
                 self.cache_spk_cond = None
                 self.cache_s2mel_style = None
                 self.cache_s2mel_prompt = None
                 self.cache_mel = None
-                torch.cuda.empty_cache()
+                self._clear_gpu_cache(force_gc=True)
             audio,sr = self._load_and_cut_audio(spk_audio_prompt,15,verbose)
             audio_22k = torchaudio.transforms.Resample(sr, 22050)(audio)
             audio_16k = torchaudio.transforms.Resample(sr, 16000)(audio)
@@ -463,6 +532,10 @@ class IndexTTS2:
             self.cache_s2mel_prompt = prompt_condition
             self.cache_spk_audio_prompt = spk_audio_prompt
             self.cache_mel = ref_mel
+
+            # Clean up intermediate tensors
+            del audio, audio_22k, audio_16k, inputs, input_features, attention_mask
+            del S_ref, ref_target_lengths, feat
         else:
             style = self.cache_s2mel_style
             prompt_condition = self.cache_s2mel_prompt
@@ -484,8 +557,10 @@ class IndexTTS2:
 
         if self.cache_emo_cond is None or self.cache_emo_audio_prompt != emo_audio_prompt:
             if self.cache_emo_cond is not None:
+                # Explicitly delete cached emotion tensor
+                del self.cache_emo_cond
                 self.cache_emo_cond = None
-                torch.cuda.empty_cache()
+                self._clear_gpu_cache(force_gc=True)
             emo_audio, _ = self._load_and_cut_audio(emo_audio_prompt,15,verbose,sr=16000)
             emo_inputs = self.extract_features(emo_audio, sampling_rate=16000, return_tensors="pt")
             emo_input_features = emo_inputs["input_features"]
@@ -496,6 +571,9 @@ class IndexTTS2:
 
             self.cache_emo_cond = emo_cond_emb
             self.cache_emo_audio_prompt = emo_audio_prompt
+
+            # Clean up intermediate tensors
+            del emo_audio, emo_inputs, emo_input_features, emo_attention_mask
         else:
             emo_cond_emb = self.cache_emo_cond
 
@@ -509,7 +587,8 @@ class IndexTTS2:
             print(f"  >> Warning: input text contains {text_token_ids.count(self.tokenizer.unk_token_id)} unknown tokens (id={self.tokenizer.unk_token_id}):")
             print( "     Tokens which can't be encoded: ", [t for t, id in zip(text_tokens_list, text_token_ids) if id == self.tokenizer.unk_token_id])
             print(f"     Consider updating the BPE model or modifying the text to avoid unknown tokens.")
-                  
+            text_token_ids = [id for id in text_token_ids if id != self.tokenizer.unk_token_id]
+
         if verbose:
             print("text_tokens_list:", text_tokens_list)
             print("segments count:", segments_count)
@@ -533,6 +612,7 @@ class IndexTTS2:
         bigvgan_time = 0
         has_warned = False
         silence = None # for stream_return
+        gen_wav_length = 0  # for stream_return
         for seg_idx, sent in enumerate(segments):
             self._set_gr_progress(0.2 + 0.7 * seg_idx / segments_count,
                                   f"speech synthesis {seg_idx + 1}/{segments_count}...")
@@ -568,7 +648,7 @@ class IndexTTS2:
                         cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
                         emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
                         emo_vec=emovec,
-                        do_sample=True,
+                        do_sample=do_sample,
                         top_p=top_p,
                         top_k=top_k,
                         temperature=temperature,
@@ -577,7 +657,7 @@ class IndexTTS2:
                         num_beams=num_beams,
                         repetition_penalty=repetition_penalty,
                         max_generate_length=max_mel_tokens,
-                        **generation_kwargs
+                        **generation_kwargs,
                     )
 
                 gpt_gen_time += time.perf_counter() - m_start_time
@@ -657,7 +737,6 @@ class IndexTTS2:
 
                     m_start_time = time.perf_counter()
                     wav = self.bigvgan(vc_target.float()).squeeze().unsqueeze(0)
-                    print(wav.shape)
                     bigvgan_time += time.perf_counter() - m_start_time
                     wav = wav.squeeze(1)
 
@@ -665,28 +744,43 @@ class IndexTTS2:
                 if verbose:
                     print(f"wav shape: {wav.shape}", "min:", wav.min(), "max:", wav.max())
                 # wavs.append(wav[:, :-512])
-                wavs.append(wav.cpu())  # to cpu before saving
+                wav_cpu = wav.cpu()  # to cpu before saving
+                wavs.append(wav_cpu)
+                gen_wav_length += wav_cpu.shape[-1] / sampling_rate
                 if stream_return:
-                    yield wav.cpu()
-                    if silence == None:
-                        silence = self.interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
-                    yield silence
-        end_time = time.perf_counter()
+                    yield wav_cpu
+                    if silence is None:
+                        silence = self.interval_silence(wavs[0].size(0), sampling_rate, interval_silence)
+                    # Only yield silence if it's not None and not the last segment
+                    if silence is not None and seg_idx + 1 < segments_count:
+                        gen_wav_length += silence.shape[-1] / sampling_rate
+                        yield silence
 
-        self._set_gr_progress(0.9, "saving audio...")
-        wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
-        wav = torch.cat(wavs, dim=1)
-        wav_length = wav.shape[-1] / sampling_rate
+                # Clean up intermediate tensors to prevent memory leak
+                del wav, codes, latent, S_infer, cond, cat_condition, vc_target
+                if seg_idx % 5 == 4:  # Clear cache every 5 segments
+                    self._clear_gpu_cache()
+
+        end_time = time.perf_counter()
         print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
         print(f">> gpt_forward_time: {gpt_forward_time:.2f} seconds")
         print(f">> s2mel_time: {s2mel_time:.2f} seconds")
         print(f">> bigvgan_time: {bigvgan_time:.2f} seconds")
         print(f">> Total inference time: {end_time - start_time:.2f} seconds")
+        if stream_return and not output_path:
+            # In streaming mode without saving, just return here
+            print(f">> Generated audio length: {gen_wav_length:.2f} seconds")
+            print(f">> RTF: {(end_time - start_time) / gen_wav_length:.4f}")
+            self._set_gr_progress(1.0, "inference completed.")
+            del wavs
+            return 
+        self._set_gr_progress(0.9, "saving audio...")
+        wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
+        wav = torch.cat(wavs, dim=1).type(torch.int16)
+        wav_length = wav.shape[-1] / sampling_rate
         print(f">> Generated audio length: {wav_length:.2f} seconds")
         print(f">> RTF: {(end_time - start_time) / wav_length:.4f}")
-
         # save audio
-        wav = wav.cpu()  # to cpu
         if output_path:
             # 直接保存音频到指定路径中
             if os.path.isfile(output_path):
@@ -694,18 +788,20 @@ class IndexTTS2:
                 print(">> remove old wav file:", output_path)
             if os.path.dirname(output_path) != "":
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
+            torchaudio.save(output_path, wav, sampling_rate)
             print(">> wav file saved to:", output_path)
-            if stream_return:
-                return None
-            yield output_path
+            if not stream_return:
+                yield output_path
         else:
-            if stream_return:
-                return None
-            # 返回以符合Gradio的格式要求
-            wav_data = wav.type(torch.int16)
-            wav_data = wav_data.numpy().T
+            print(">> no output_path specified, skipping audio save.")
+        if not stream_return:
+            # Gradio的格式要求
+            wav_data = wav.numpy().T
             yield (sampling_rate, wav_data)
+        del wavs, wav
+        # Reset GPT cache and clear GPU memory after inference
+        self._reset_gpt_cache()
+        self._clear_gpu_cache(force_gc=True)
 
 
 def find_most_similar_cosine(query_vector, matrix):
@@ -776,7 +872,7 @@ class QwenEmotion:
         return emotion_dict
 
     def inference(self, text_input):
-        start = time.time()
+        start = time.perf_counter()
         messages = [
             {"role": "system", "content": f"{self.prompt}"},
             {"role": "user", "content": f"{text_input}"}
@@ -827,8 +923,11 @@ class QwenEmotion:
             content["悲伤"], content["低落"] = content.get("低落", 0.0), content.get("悲伤", 0.0)
             # print(">>  after vec swap", content)
 
-        return self.convert(content)
-
+        result = self.convert(content)
+        # Clean up intermediate tensors to prevent memory leak
+        del model_inputs, generated_ids, output_ids
+        print(f">> QwenEmotion inference took {time.perf_counter() - start:.2f} seconds")
+        return result
 
 if __name__ == "__main__":
     prompt_wav = "examples/voice_01.wav"
